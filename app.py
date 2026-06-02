@@ -3,62 +3,63 @@ import pandas as pd
 from solver_logic import generate_schedule
 import datetime
 
-st.set_page_config(page_title="Planning IDE", layout="wide")
-st.title("🗓️ Gestion du Planning Infirmières")
+st.set_page_config(page_title="Planning IDE v2", layout="wide")
 
-# Initialisation des stats (en HEURES)
+# --- LISTE DES INFIRMIÈRES ---
+NURSE_NAMES = [
+    "BUFFA. C", "BAMBOU. D", "SERVOIN. N", 
+    "HIZETTE. C", "DUSSAUT. S", "HOAREAU. E", "THOMAS. N"
+]
+
+st.title("🗓️ Générateur de Planning Infirmières")
+
+# Initialisation des compteurs en HEURES dans la mémoire de la page
 if 'stats' not in st.session_state:
-    st.session_state['stats'] = {"Alice": 0.0, "Bob": 0.0, "Clara": 0.0, "David": 0.0, "Eve": 0.0}
+    st.session_state['stats'] = {name: 0.0 for name in NURSE_NAMES}
 
-nurses = list(st.session_state['stats'].keys())
-
-# Menu latéral
-st.sidebar.header("Paramètres")
+# --- BARRE LATÉRALE ---
+st.sidebar.header("⚙️ Configuration")
 year = st.sidebar.selectbox("Année", [2024, 2025, 2026])
 month = st.sidebar.slider("Mois", 1, 12, value=datetime.datetime.now().month)
 
-if st.button("Générer le mois"):
-    with st.spinner('Calcul du planning optimal en cours...'):
-        df = generate_schedule(nurses, year, month, st.session_state['stats'], [])
+# Affichage des compteurs actuels
+st.sidebar.markdown("---")
+st.sidebar.subheader("📊 Heures Cumulées (Historique)")
+for n in NURSE_NAMES:
+    h = st.session_state['stats'][n]
+    st.sidebar.write(f"**{n}** : {round(h, 1)} h")
+
+# --- ACTIONS ---
+if st.button("🚀 Générer le mois suivant"):
+    with st.spinner('L\'algorithme cherche la meilleure répartition...'):
+        df = generate_schedule(NURSE_NAMES, year, month, st.session_state['stats'], [])
         if df is not None:
             st.session_state['current_df'] = df
         else:
-            st.error("❌ Pas de solution trouvée. Essayez d'alléger les contraintes ou de vérifier les 48h.")
+            st.error("Impossible de trouver un planning équitable. Essayez de changer de mois.")
 
+# --- AFFICHAGE ET MODIFICATION ---
 if 'current_df' in st.session_state:
-    st.subheader(f"Planning pour {month}/{year}")
-    st.info("Vous pouvez modifier les noms directement dans le tableau ci-dessous.")
+    st.subheader(f"Planning du mois : {month}/{year}")
+    st.info("💡 Vous pouvez modifier les noms manuellement dans le tableau. Les statistiques se mettront à jour au clic sur Valider.")
     
-    # Affichage du tableau éditable
-    edited_df = st.data_editor(st.session_state['current_df'], use_container_width=True)
+    # Éditeur de tableau
+    edited_df = st.data_editor(st.session_state['current_df'], use_container_width=True, num_rows="fixed")
     
-    if st.button("✅ Valider ce planning et mettre à jour les compteurs"):
-        # Recalcul des heures à partir du tableau (éventuellement modifié à la main)
+    if st.button("✅ Valider ce planning et enregistrer les heures"):
+        # On repart des stats actuelles
         new_stats = st.session_state['stats'].copy()
         
-        # Liste des jours TIIH pour le calcul des heures
-        tiih_days = []
-        for d in range(1, len(edited_df) + 1):
-            if datetime.date(year, month, d).weekday() in [1, 3, 4]:
-                tiih_days.append(f"{d}/{month}")
-
-        for n in nurses:
-            # On compte les jours et les nuits
-            jours = len(edited_df[edited_df['Jour'] == n])
-            nuits = len(edited_df[edited_df['Nuit'] == n])
+        # On calcule les heures travaillées dans le tableau affiché
+        for name in NURSE_NAMES:
+            jours = len(edited_df[edited_df['Jour'] == name])
+            nuits = len(edited_df[edited_df['Nuit'] == name])
+            tiihs = len(edited_df[edited_df['TIIH'] == name])
             
-            # On compte si certains de ces jours étaient des TIIH
-            tiih_count = len(edited_df[(edited_df['Jour'] == n) & (edited_df['Date'].isin(tiih_days))])
-            
-            # Calcul total : (Jours * 12h) + (Nuits * 12h) + (TIIH * 7.7h)
-            total_hours = (jours * 12) + (nuits * 12) + (tiih_count * 7.7)
-            new_stats[n] += total_hours
+            # Calcul : Jour(12h) + Nuit(12h) + TIIH(7.7h)
+            total_heures_mois = (jours * 12) + (nuits * 12) + (tiihs * 7.7)
+            new_stats[name] += total_heures_mois
         
         st.session_state['stats'] = new_stats
-        st.success("Statistiques mises à jour ! Le mois prochain sera équilibré en fonction de ces nouveaux totaux.")
-
-# Affichage des compteurs
-st.sidebar.markdown("---")
-st.sidebar.subheader("⏳ Heures cumulées")
-for n, h in st.session_state['stats'].items():
-    st.sidebar.write(f"**{n}** : {round(h, 1)} h")
+        st.success("Statistiques enregistrées ! Le mois prochain sera équilibré en conséquence.")
+        st.rerun() # Recharge la page pour mettre à jour la sidebar
