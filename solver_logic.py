@@ -4,7 +4,8 @@ import pandas as pd
 
 def generate_schedule(nurses, year, month, history, holidays):
     model = cp_model.CpModel()
-    # Calcul du nombre de jours dans le mois
+    
+    # Calcul des jours du mois
     if month == 12:
         num_days = 31
     else:
@@ -14,11 +15,10 @@ def generate_schedule(nurses, year, month, history, holidays):
     tiih_days = []
     for d in range(1, num_days + 1):
         date_obj = datetime.date(year, month, d)
-        if date_obj.weekday() in [1, 3, 4]:
+        if date_obj.weekday() in [1, 3, 4] and date_obj not in holidays:
             tiih_days.append(d)
 
-    # Variables :shifts[(infirmière, jour, poste)]
-    # postes : 0 = JOUR, 1 = NUIT
+    # Variables : 0 = JOUR, 1 = NUIT
     shifts = {}
     for n in nurses:
         for d in range(1, num_days + 1):
@@ -27,37 +27,42 @@ def generate_schedule(nurses, year, month, history, holidays):
 
     # --- CONTRAINTES ---
     for d in range(1, num_days + 1):
-        model.Add(sum(shifts[(n, d, 0)] for n in nurses) == 1) # 1 Jour par jour
-        model.Add(sum(shifts[(n, d, 1)] for n in nurses) == 1) # 1 Nuit par jour
+        model.Add(sum(shifts[(n, d, 0)] for n in nurses) == 1) 
+        model.Add(sum(shifts[(n, d, 1)] for n in nurses) == 1) 
 
         for n in nurses:
-            model.Add(shifts[(n, d, 0)] + shifts[(n, d, 1)] <= 1) # Pas J et N le même jour
+            model.Add(shifts[(n, d, 0)] + shifts[(n, d, 1)] <= 1) 
             if d < num_days:
-                model.Add(shifts[(n, d, 1)] + shifts[(n, d+1, 0)] <= 1) # Pas Nuit puis Jour
+                model.Add(shifts[(n, d, 1)] + shifts[(n, d+1, 0)] <= 1)
+                model.Add(shifts[(n, d, 0)] + shifts[(n, d+1, 1)] <= 1)
 
-    # 48h glissantes (7 jours)
+    # --- RÈGLE DES 48H (EN MINUTES) ---
     for n in nurses:
         for d in range(1, num_days - 5):
             window = []
             for i in range(7):
                 day = d + i
-                h = shifts[(n, day, 0)] * 12 + shifts[(n, day, 1)] * 12
+                # On utilise les minutes : 720 min = 12h, 462 min = 7h42
+                h = shifts[(n, day, 0)] * 720 + shifts[(n, day, 1)] * 720
                 if day in tiih_days:
-                    h += shifts[(n, day, 0)] * 7.7
+                    h += shifts[(n, day, 0)] * 462
                 window.append(h)
-            model.Add(sum(window) <= 48)
+            model.Add(sum(window) <= 2880) # 2880 min = 48h
 
-    # Équité (Heures totales)
-    nurse_hours = []
+    # --- ÉQUITÉ ---
+    nurse_minutes = []
     for n in nurses:
-        total = sum(shifts[(n, d, 0)] * (19.7 if d in tiih_days else 12) + shifts[(n, d, 1)] * 12 for d in range(1, num_days + 1))
-        # On ajoute l'historique du mois précédent
-        nurse_hours.append(total + history.get(n, 0))
+        # On calcule le total en minutes
+        total_m = sum(shifts[(n, d, 0)] * (1182 if d in tiih_days else 720) + 
+                      shifts[(n, d, 1)] * 720 for d in range(1, num_days + 1))
+        # Ajout historique (converti en minutes si stocké en heures)
+        hist_m = int(history.get(n, 0) * 60)
+        nurse_minutes.append(total_m + hist_m)
 
-    min_h = model.NewIntVar(0, 5000, 'min_h')
-    max_h = model.NewIntVar(0, 5000, 'max_h')
-    model.AddMinEquality(min_h, nurse_hours)
-    model.AddMaxEquality(max_h, nurse_hours)
+    min_h = model.NewIntVar(0, 1000000, 'min_h')
+    max_h = model.NewIntVar(0, 1000000, 'max_h')
+    model.AddMinEquality(min_h, nurse_minutes)
+    model.AddMaxEquality(max_h, nurse_minutes)
     model.Minimize(max_h - min_h)
 
     solver = cp_model.CpSolver()
@@ -66,10 +71,10 @@ def generate_schedule(nurses, year, month, history, holidays):
     if status == cp_model.OPTIMAL or status == cp_model.FEASIBLE:
         data = []
         for d in range(1, num_days + 1):
-            row = {"Jour": f"{d}/{month}/{year}"}
+            row = {"Date": f"{d}/{month}", "Jour": "", "Nuit": ""}
             for n in nurses:
                 if solver.Value(shifts[(n, d, 0)]): row["Jour"] = n
                 if solver.Value(shifts[(n, d, 1)]): row["Nuit"] = n
             data.append(row)
-        return pd.DataFrame(data, columns=["Jour", "Nuit"])
+        return pd.DataFrame(data)
     return None
