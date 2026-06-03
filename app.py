@@ -3,7 +3,7 @@ import pandas as pd
 from solver_logic import generate_schedule
 import datetime, json, os, holidays
 
-st.set_page_config(page_title="Planning IDE - Horizontal", layout="wide")
+st.set_page_config(page_title="Planning IDE v6", layout="wide")
 
 NURSE_NAMES = ["BUFFA. C", "BAMBOU. D", "SERVOIN. N", "HIZETTE. C", "DUSSAUT. S", "HOAREAU. E", "THOMAS. N"]
 SHIFT_OPTIONS = ["-", "☀️ JOUR", "🌙 NUIT", "🛠️ TIIH"]
@@ -17,7 +17,6 @@ def load_month_data(y, m):
     if os.path.exists(path):
         with open(path, "r") as f:
             data = json.load(f)
-            # On s'assure que l'ordre des infirmières est respecté
             return pd.DataFrame.from_dict(data, orient='index').reindex(NURSE_NAMES)
     return None
 
@@ -38,13 +37,13 @@ def calculate_global_stats(current_y, current_m):
                             elif "🛠️" in str(val): stats[n] += 7.7
     return stats
 
-# --- UI ---
+# --- UI SIDEBAR ---
 st.sidebar.header("🗓️ Sélection")
-year = st.sidebar.selectbox("Année", [2024, 2025, 2026], index=2) # 2026 par défaut pour votre test
-month = st.sidebar.slider("Mois", 1, 12, 3) # Mars par défaut
+year = st.sidebar.selectbox("Année", [2024, 2025, 2026], index=2)
+month = st.sidebar.slider("Mois", 1, 12, datetime.datetime.now().month)
 current_stats = calculate_global_stats(year, month)
 
-st.title(f"🏥 Planning Équipe - {month:02d}/{year}")
+st.title(f"🏥 Planning Expert - {month:02d}/{year}")
 
 existing_df = load_month_data(year, month)
 fr_holidays = holidays.France(years=year)
@@ -54,50 +53,51 @@ month_holidays = [d for d in fr_holidays if d.month == month]
 df_to_edit = None
 
 if existing_df is not None:
-    st.success("✅ Planning enregistré pour ce mois. Vous pouvez le modifier.")
+    st.success("✅ Planning validé. Vous pouvez modifier manuellement.")
     df_to_edit = existing_df
 else:
     now = datetime.date.today()
     target_date = datetime.date(year, month, 1)
     
-    # Futur ou Présent : Génération possible
     if target_date >= now.replace(day=1):
         if st.button("🚀 Générer le planning automatique"):
-            with st.spinner("Calcul des cycles..."):
+            with st.spinner("Calcul en cours (règles complexes)..."):
                 raw = generate_schedule(NURSE_NAMES, year, month, current_stats, month_holidays)
                 if raw:
                     st.session_state[f"temp_{year}_{month}"] = pd.DataFrame.from_dict(raw, orient='index').reindex(NURSE_NAMES)
                     st.rerun()
-                else: st.error("Échec : Trop de contraintes.")
+                else: 
+                    st.error("Échec : Le logiciel ne trouve pas de solution respectant toutes les contraintes (48h, Repos Lundi, Blocs de 2).")
         
         df_to_edit = st.session_state.get(f"temp_{year}_{month}", None)
-    
-    # Passé : Saisie manuelle
     else:
-        st.info("📜 Mois passé. Saisie manuelle uniquement.")
-        num_days = (datetime.date(year, month, 28) + datetime.timedelta(days=4)).replace(day=1) - datetime.timedelta(days=1)
-        df_to_edit = pd.DataFrame("-", index=NURSE_NAMES, columns=[f"{d}" for d in range(1, num_days.day + 1)])
+        st.info("📜 Saisie manuelle pour ce mois passé.")
+        last_d = (datetime.date(year, month, 28) + datetime.timedelta(days=4)).replace(day=1) - datetime.timedelta(days=1)
+        df_to_edit = pd.DataFrame("-", index=NURSE_NAMES, columns=[f"{d}" for d in range(1, last_d.day + 1)])
 
 # --- ÉDITEUR ---
 if df_to_edit is not None:
-    # Coloration des week-ends dans l'entête (visuel uniquement)
     config = {}
     for col in df_to_edit.columns:
         date_obj = datetime.date(year, month, int(col))
-        label = f"{col} (WE)" if date_obj.weekday() >= 5 else col
-        if date_obj in month_holidays: label = f"{col} (FÉRIÉ)"
+        label = col
+        if date_obj.weekday() == 5: label += " (Sam)"
+        elif date_obj.weekday() == 6: label += " (Dim)"
+        elif date_obj.weekday() == 0: label += " (Lun)"
+        
+        if date_obj in month_holidays: label += " 🚩"
         
         config[col] = st.column_config.SelectboxColumn(label, options=SHIFT_OPTIONS, width="small")
 
     edited_df = st.data_editor(df_to_edit, column_config=config, use_container_width=True)
     
-    if st.button("💾 Enregistrer le planning"):
+    if st.button("💾 Enregistrer"):
         with open(get_file_path(year, month), "w") as f:
             json.dump(edited_df.to_dict(orient='index'), f)
-        st.success("Enregistré avec succès !")
+        st.success("Planning enregistré !")
         st.rerun()
 
 # Sidebar Stats
 st.sidebar.markdown("---")
-st.sidebar.subheader("📊 Heures cumulées")
+st.sidebar.subheader("📊 Totaux cumulés")
 for n, h in current_stats.items(): st.sidebar.write(f"**{n}** : {round(h,1)}h")
