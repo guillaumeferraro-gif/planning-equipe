@@ -1,94 +1,87 @@
 import streamlit as st
 import pandas as pd
 from solver_logic import generate_schedule
-import datetime
-import json
-import os
-import holidays
+import datetime, json, os, holidays
 
-st.set_page_config(page_title="Planning IDE v5", layout="wide")
+st.set_page_config(page_title="Planning IDE Expert", layout="wide")
 
 NURSE_NAMES = ["BUFFA. C", "BAMBOU. D", "SERVOIN. N", "HIZETTE. C", "DUSSAUT. S", "HOAREAU. E", "THOMAS. N"]
 SHIFT_OPTIONS = ["-", "☀️ JOUR", "🌙 NUIT", "🛠️ TIIH"]
-SAVE_FILE = "stats_backup.json"
+DATA_DIR = "data"
+if not os.path.exists(DATA_DIR): os.makedirs(DATA_DIR)
 
-def load_data():
-    if os.path.exists(SAVE_FILE):
-        try:
-            with open(SAVE_FILE, "r") as f:
-                data = json.load(f)
-                # S'assurer que toutes les infirmières sont présentes
-                for name in NURSE_NAMES:
-                    if name not in data: data[name] = 0.0
-                return data
-        except: return {name: 0.0 for name in NURSE_NAMES}
-    return {name: 0.0 for name in NURSE_NAMES}
+# --- FONCTIONS DE GESTION ---
+def get_file_path(y, m): return os.path.join(DATA_DIR, f"planning_{y}_{m:02d}.json")
 
-if 'stats' not in st.session_state: 
-    st.session_state['stats'] = load_data()
+def load_month_data(y, m):
+    path = get_file_path(y, m)
+    if os.path.exists(path):
+        with open(path, "r") as f: return pd.DataFrame(json.load(f))
+    return None
 
-st.title("🏥 Planning : Gestion des Phases Jour/Nuit")
+def calculate_global_stats(current_y, current_m):
+    """Calcule les heures de tous les mois AVANT le mois sélectionné"""
+    stats = {n: 0.0 for n in NURSE_NAMES}
+    files = [f for f in os.listdir(DATA_DIR) if f.startswith("planning_")]
+    for f in files:
+        parts = f.replace(".json", "").split("_")
+        y, m = int(parts[1]), int(parts[2])
+        if (y < current_y) or (y == current_y and m < current_m):
+            with open(os.path.join(DATA_DIR, f), "r") as f_in:
+                df = pd.DataFrame(json.load(f_in))
+                for n in NURSE_NAMES:
+                    for val in df.loc[n]:
+                        if "☀️" in str(val) or "🌙" in str(val): stats[n] += 12
+                        elif "🛠️" in str(val): stats[n] += 7.7
+    return stats
 
-# --- SIDEBAR ---
-st.sidebar.header("🗓️ Paramètres")
+# --- UI SIDEBAR ---
+st.sidebar.header("🗓️ Sélection")
 year = st.sidebar.selectbox("Année", [2024, 2025, 2026])
 month = st.sidebar.slider("Mois", 1, 12, datetime.datetime.now().month)
+current_stats = calculate_global_stats(year, month)
 
+# --- LOGIQUE D'AFFICHAGE ---
+st.title(f"🏥 Planning - {month:02d}/{year}")
+existing_df = load_month_data(year, month)
 fr_holidays = holidays.France(years=year)
-current_month_holidays = [d for d, name in fr_holidays.items() if d.month == month]
+month_holidays = [d for d in fr_holidays if d.month == month]
 
-# --- GÉNÉRATION ---
-if st.button("🚀 Générer le Planning"):
-    with st.spinner('Calcul des cycles et de l\'équité...'):
-        raw_data = generate_schedule(NURSE_NAMES, year, month, st.session_state['stats'], current_month_holidays)
-        if raw_data:
-            st.session_state['current_plan'] = raw_data
-        else:
-            st.error("❌ Pas de solution. Essayez de réduire l'historique ou de vérifier les fériés.")
-
-# --- AFFICHAGE ---
-if 'current_plan' in st.session_state:
-    df_display = pd.DataFrame.from_dict(st.session_state['current_plan'], orient='index')
-    df_display.columns = [f"{d}" for d in df_display.columns]
-
-    st.subheader(f"Planning : {month}/{year}")
-    
-    # Configuration Selectbox
-    column_config = {
-        f"{d}": st.column_config.SelectboxColumn(
-            f"{d}", options=SHIFT_OPTIONS, width="small"
-        ) for d in df_display.columns
-    }
-
-    # Style pour repérer WE et Fériés
-    def style_we(col):
-        d_num = int(col.name)
-        date_obj = datetime.date(year, month, d_num)
-        bg = ""
-        if date_obj.weekday() >= 5: bg = "background-color: #FFF3CD;"
-        if date_obj in current_month_holidays: bg = "background-color: #F8D7DA;"
-        return [bg] * len(col)
-
-    edited_df = st.data_editor(df_display, column_config=column_config, use_container_width=True)
-
-    if st.button("✅ Valider et Sauvegarder"):
-        new_stats = st.session_state['stats'].copy()
-        for nurse in NURSE_NAMES:
-            h_month = 0
-            for val in edited_df.loc[nurse]:
-                if "☀️ JOUR" in str(val): h_month += 12
-                elif "🌙 NUIT" in str(val): h_month += 12
-                elif "🛠️ TIIH" in str(val): h_month += 7.7
-            new_stats[nurse] += h_month
+# Cas 1 : Le planning existe déjà -> Modification uniquement
+if existing_df is not None:
+    st.success("✅ Planning validé. Modification autorisée.")
+    df_to_edit = existing_df
+else:
+    # Cas 2 : Passé sans planning -> Création manuelle vide
+    now = datetime.datetime.now()
+    if year < now.year or (year == now.year and month < now.month):
+        st.info("📜 Mois passé sans données. Vous pouvez le remplir manuellement.")
+        num_days = (datetime.date(year, month, 28) + datetime.timedelta(days=4)).replace(day=1) - datetime.timedelta(days=1)
+        df_to_edit = pd.DataFrame("-", index=NURSE_NAMES, columns=[f"{d}" for d in range(1, num_days.day + 1)])
+    # Cas 3 : Futur ou présent -> Bouton Générer disponible
+    else:
+        if st.button("🚀 Générer le planning automatique"):
+            with st.spinner("Calcul équitable..."):
+                raw = generate_schedule(NURSE_NAMES, year, month, current_stats, month_holidays)
+                if raw:
+                    st.session_state[f"temp_{year}_{month}"] = pd.DataFrame(raw)
+                    st.rerun()
+                else: st.error("Échec de la génération.")
         
-        st.session_state['stats'] = new_stats
-        with open(SAVE_FILE, "w") as f: json.dump(new_stats, f)
-        st.success("Compteurs mis à jour !")
+        df_to_edit = st.session_state.get(f"temp_{year}_{month}", None)
+
+# --- ÉDITEUR ET SAUVEGARDE ---
+if df_to_edit is not None:
+    config = {f"{c}": st.column_config.SelectboxColumn(f"{c}", options=SHIFT_OPTIONS, width="small") for c in df_to_edit.columns}
+    edited_df = st.data_editor(df_to_edit, column_config=config, use_container_width=True)
+    
+    if st.button("💾 Valider et Enregistrer définitivement"):
+        with open(get_file_path(year, month), "w") as f:
+            json.dump(edited_df.to_dict(), f)
+        st.success("Enregistré ! Ce mois est maintenant verrouillé pour la génération.")
         st.rerun()
 
-# --- SIDEBAR STATS ---
+# Stats en sidebar
 st.sidebar.markdown("---")
-st.sidebar.subheader("📊 Totaux cumulés")
-for n in NURSE_NAMES:
-    h = st.session_state['stats'].get(n, 0)
-    st.sidebar.write(f"**{n}** : {round(h, 1)} h")
+st.sidebar.subheader("📊 Heures cumulées (Historique)")
+for n, h in current_stats.items(): st.sidebar.write(f"**{n}** : {round(h,1)}h")
