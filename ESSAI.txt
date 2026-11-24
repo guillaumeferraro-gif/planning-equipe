@@ -1,0 +1,30 @@
+VERSION D’ESSAI — PLANNING IDE
+
+Prérequis : Python 3.11 ou plus récent (3.12 conseillé).
+Extraire tout le ZIP dans un dossier avant de lancer.
+
+Windows : double-cliquer demarrer_windows.bat.
+Mac/Linux : ouvrir un terminal dans le dossier et exécuter :
+  python3 -m venv .venv
+  .venv/bin/python -m pip install -r requirements.txt
+  .venv/bin/python -m streamlit run app.py
+
+Windows, si le lancement automatique échoue :
+  py -3 -m venv .venv
+  .venv\Scripts\python -m pip install -r requirements.txt
+  .venv\Scripts\python -m streamlit run app.py
+
+Ouvrir ensuite http://localhost:8501 dans votre navigateur.
+La première installation nécessite Internet. Les données restent dans data/.
+
+PREMIER ESSAI
+1. Dans Équipe et règles, compléter les quatre quotités vides.
+   Utiliser des noms fictifs pour cet essai. L’OAT peut rester vide.
+2. Dans Planning, choisir un mois puis Générer une proposition.
+3. Examiner la proposition et cliquer Conserver cette proposition.
+4. Dans Absences, saisir une absence du vendredi au lundi : crédit15h24.
+5. Dans TIIH, supprimer ou déplacer un poste puis régénérer le mois.
+
+L’absence d’historique antérieur entraîne une alerte de validation provisoire.
+Cela est attendu lors du premier essai. Le planning reste modifiable.
+Le code se lance localement ; GitHub n’héberge pas le planning en ligne.
