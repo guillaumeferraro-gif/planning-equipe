@@ -3,6 +3,16 @@
 Application locale de planning d'équipe infirmière, avec génération automatique et
 modifications manuelles.
 
+## Ouvrir le planning sans installer Python
+
+1. Ouvrez [Planning-IDE.html](./Planning-IDE.html) sur GitHub, puis cliquez sur **Download raw file** (flèche vers le bas) pour télécharger le fichier.
+2. Double-cliquez sur le fichier téléchargé. Le planning s’ouvre dans votre navigateur et fonctionne hors ligne.
+3. Cliquez sur **Essayer avec une équipe fictive**, puis sur **Générer une proposition**. Examinez le mois proposé avant de le conserver.
+
+Pour préparer le planning de votre équipe, renseignez les quatre quotités manquantes dans les paramètres de l’équipe. Vous pourrez saisir l’OAT quand vous le connaîtrez.
+
+Le navigateur conserve les données sur cet ordinateur. Exportez une sauvegarde JSON avant de changer de navigateur ou de poste, de déplacer le fichier ou d’effacer les données de navigation.
+
 ## Fonctionnalités
 
 - SMUR J de 8 h à 20 h et SMUR N de 20 h à 8 h le lendemain, chaque jour.
@@ -16,7 +26,7 @@ modifications manuelles.
 - Contrôles de repos, séries, couverture, absences et frontières entre mois.
 - Sauvegardes locales, export CSV, import des anciens plannings et sauvegarde JSON.
 
-## Essayer sous Windows
+## Lancer la version Python sous Windows
 
 Installer Python 3.11 ou plus récent (Python 3.12 conseillé).
 
@@ -27,7 +37,7 @@ Installer Python 3.11 ou plus récent (Python 3.12 conseillé).
 Le premier lancement télécharge les dépendances. Garder la fenêtre de lancement ouverte
 pendant l'utilisation.
 
-## Lancer sous macOS ou Linux
+## Lancer la version Python sous macOS ou Linux
 
 Depuis le dossier du projet :
 
@@ -71,7 +81,7 @@ Un historique absent est signalé comme incomplet : il n'est pas assimilé à un
 Une limite de temps de recherche n'est pas une preuve d'impossibilité. Le programme
 distingue les différents résultats et contrôle les propositions indépendamment du moteur.
 
-## Données et reprise de l'existant
+## Données et reprise de l'existant (version Python)
 
 Les fichiers sont conservés dans **data/** et exclus de Git. La variable
 **PLANNING_DATA_DIR** permet de choisir un autre dossier persistant.
@@ -84,7 +94,7 @@ La sauvegarde utilise un remplacement atomique, une copie de secours
 **planning-state.backup.json** et une vérification de révision pour éviter les écrasements
 entre sessions. Cette version est destinée à un responsable utilisant l'application localement.
 
-## Vérification
+## Vérification (version Python)
 
 ```bash
 python -m pip install -r requirements-dev.txt
@@ -92,6 +102,6 @@ python -m pytest -q
 ```
 
 19 tests automatisés vérifient les règles métier, le moteur, la persistance et les
-parcours Streamlit. La validation visuelle complète en navigateur reste à terminer.
+parcours Streamlit. La version HTML a également été testée hors ligne dans Chromium.
 
 Le [cahier des charges](specs/001-fiabiliser-planning-ide/spec.md) détaille le cadrage.
