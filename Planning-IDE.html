@@ -28,6 +28,7 @@
 .pdf-actions a.primary{color:white;background:var(--teal);border-color:var(--teal)}
 .day-preview{font-size:.88rem}.day-preview ul{margin:.4rem 0;padding-left:1.3rem}
 @media print{.generation-scope{display:none}}
+.month-controls{display:flex;align-items:center;justify-content:space-between;gap:.6rem;flex-wrap:wrap;margin:.5rem 0 1rem}.month-controls .generation-scope{margin:0}.month-controls .generation-scope small{margin-left:.5rem}.search-failure{background:#fcf0e9;border-color:#e7cdc1}.search-failure p{margin-top:.35rem}.clear-options{margin:.9rem 0;border:1px solid var(--line);border-radius:7px;padding:.65rem}.clear-options label{display:block;margin:.25rem 0}.clear-table{font-size:.88rem}.clear-table td{text-align:center}.clear-table th,.clear-table td{padding:.35rem .45rem}.month-issues{max-height:45vh}dialog:has(.clear-table){max-width:550px}
 </style>
 </head>
 <body>
@@ -91,6 +92,63 @@
     return [new Date(Date.UTC(year, month - 1, 1)).toISOString().slice(0,10),
       new Date(Date.UTC(year, month, 0)).toISOString().slice(0,10)];
   }
+
+  function previewClearMonth(state,year,month,options={}) {
+    const [start,end]=monthBounds(year,month);
+    requireValue(plain(options) && ["includeLocked","includeConfirmed"].every(key=>
+      options[key]===undefined || typeof options[key]==="boolean"),"Options d’effacement invalides.");
+    const counts=()=>({shifts:0,rests:0,locked:0,confirmed:0,phases:0,lockedPhases:0,reviewed:0});
+    const removed=counts(),kept=counts();
+    const candidate=JSON.parse(JSON.stringify(state));
+
+    function filterDay(table,day,keep) {
+      if (!table[day]) return;
+      const entries=Object.entries(table[day]), remaining=entries.filter(([,value])=>keep(value));
+      if (remaining.length===entries.length) return;
+      if (remaining.length) table[day]=Object.fromEntries(remaining);
+      else delete table[day];
+    }
+
+    for (const day of dates(start,end)) {
+      filterDay(candidate.assignments,day,a=>{
+        const preserve=(a.locked && !options.includeLocked) || (a.confirmed && !options.includeConfirmed);
+        const tally=preserve?kept:removed;
+        tally[a.shift==="-"?"rests":"shifts"]++;
+        if (a.locked) tally.locked++;
+        if (a.confirmed) tally.confirmed++;
+        return preserve;
+      });
+      filterDay(candidate.phases,day,p=>{
+        const preserve=p.locked && !options.includeLocked;
+        const tally=preserve?kept:removed;
+        tally.phases++;
+        if (p.locked) tally.lockedPhases++;
+        return preserve;
+      });
+      const reviewed=candidate.reviewed[day];
+      if (!reviewed) continue;
+      // A reviewed date without an assignment means known rest. Erasing it
+      // must restore the distinction between a blank date and recorded rest.
+      const remaining=reviewed.filter(id=>Object.hasOwn(candidate.assignments[day]??{},id));
+      const retainedCount=new Set(remaining).size;
+      kept.reviewed+=retainedCount;
+      removed.reviewed+=new Set(reviewed).size-retainedCount;
+      if (remaining.length===reviewed.length) continue;
+      if (remaining.length) candidate.reviewed[day]=remaining;
+      else delete candidate.reviewed[day];
+    }
+    const changed=removed.shifts+removed.rests+removed.phases+removed.reviewed>0;
+    return {state:candidate,changed,removed,kept};
+  }
+
+  function applyClearMonth(state,year,month,options={}) {
+    const result=previewClearMonth(state,year,month,options);
+    if (result.changed) {
+      for (const key of ["assignments","phases","reviewed"]) state[key]=result.state[key];
+    }
+    return {...result,state};
+  }
+
   function formatMinutes(value) {
     if (value === null || value === undefined) return "À renseigner";
     const minutes = Math.abs(Math.round(value));
@@ -968,7 +1026,7 @@
     return {state:candidate,warnings,placeholderContractIds};
   }
   globalThis.PlannerDomain=Object.freeze({SHIFT_MINUTES,SHIFT_LABELS,ABSENCE_KINDS,dates,addDays,weekday,
-    monthBounds,formatMinutes,parseDuration,newState,quotaOn,setContract,isHoliday,defaultTiih,tiihRequired,
+    monthBounds,previewClearMonth,applyClearMonth,formatMinutes,parseDuration,newState,quotaOn,setContract,isHoliday,defaultTiih,tiihRequired,
     changeTiih,previewTiihBatch,applyTiihBatch,shiftInterval,absentFor,absenceOn,setAbsence,creditMinutes,validateState,annualTotals,validateSchedule,
     fullWeekendPairAt,newConsecutiveFullWeekends,
     importLegacyFiles,calendarWeekBounds,migrateState,phaseBounds,tiihSource,tiihDay,
@@ -1112,7 +1170,7 @@
         }
       }
       const historicalShifts = {J:0, N:0};
-      const known = [];
+      const known = [], savedPhase=[], savedDuty=[];
       days.forEach((day, i) => {
         const old = state.assignments[day]?.[nurse.id];
         const reviewed = state.reviewed[day]?.includes(nurse.id);
@@ -1120,6 +1178,8 @@
           (day <= end || reopen.has(i) || (!reviewed && !old));
         known[i] = active[i] && (editable[i] || reviewed || Boolean(old));
         const phase = state.phases[day]?.[nurse.id];
+        savedPhase[i]=active[i] && phase && day>=start && day<=end ? (phase.mode==="N"?phase.age:-phase.age) : null;
+        savedDuty[i]=active[i] && day>=start && day<=end && shifts.includes(old?.shift)?old.shift:null;
         oldPhase[i] = active[i] && phase && (day < start || (day > end && !reopen.has(i)) || phase.locked)
           ? (phase.mode === "N" ? phase.age : -phase.age) : null;
         if (!editable[i] && old?.shift && old.shift !== "-" && (active[i] || (day>=start && day<=horizon))) {
@@ -1128,7 +1188,7 @@
         }
         available[i] = Object.fromEntries(shifts.map(code => [code, active[i] && !D.absentFor(state,nurse.id,day,code)]));
       });
-      return {id:nurse.id, person:nurse, active, quotas, work, editable, known, oldPhase, available,
+      return {id:nurse.id, person:nurse, active, quotas, work, editable, known, oldPhase, savedPhase, savedDuty, available,
         boundaryDuty:[],initialLoads, historicalShifts};
     });
     // First try to repair vacancies in a saved forecast without disturbing
@@ -1162,6 +1222,15 @@
     const tasks = [];
     let impossible = null;
     for (const n of nurses) {
+      for (let i=priorDays;i<=monthEnd;i++) {
+        const phase=n.oldPhase[i], duty=n.work[i];
+        if (phase && duty && (phase>0)!==(duty==="N")) {
+          const mode=phase>0?"nuit":"jour";
+          return {conflictDate:days[i],impossible:n.person.name+" : le "+days[i]+", la période de "+mode+
+            " verrouillée est incompatible avec le poste "+D.SHIFT_LABELS[duty]+
+            " confirmé ou verrouillé. Vérifiez la période et la protection de ce poste."};
+        }
+      }
       for (let first=priorDays-4; first<=endIndex; first++) {
         if (n.work[first] && n.work[first+1] && n.work[first+2] &&
             [first+3,first+4].some(j=>j>=priorDays && n.work[j]))
@@ -1169,9 +1238,14 @@
             days[first]+" au "+days[first+2]+". Une affectation enregistrée empêche ce repos."};
       }
       for (let friday=priorDays-9; friday<=endIndex; friday++) {
-        if (weekdays[friday]===4 && consecutiveFullWeekends(timing,n.work,friday))
-          return {repairDates,impossible:n.person.name+" : les week-ends des vendredis "+days[friday]+
-            " et "+days[friday+7]+" imposent deux blocs vendredi–samedi–dimanche consécutifs."};
+        if (weekdays[friday]!==4 || !consecutiveFullWeekends(timing,n.work,friday)) continue;
+        const neighbor=[7,0,8,9,1,2].map(offset=>friday+offset)
+          .find(j=>(j<priorDays || j>endIndex) && n.work[j]);
+        const conflictDate=days[neighbor ?? friday];
+        const remedy=neighbor===undefined?"Vérifiez les affectations protégées de ces deux week-ends.":
+          "Ouvrez le planning voisin à la date du "+conflictDate+" pour corriger l’un de ces blocs.";
+        return {repairDates,conflictDate,impossible:n.person.name+" : les week-ends des vendredis "+days[friday]+
+          " et "+days[friday+7]+" imposent deux blocs vendredi–samedi–dimanche consécutifs. "+remedy};
       }
     }
     for (let i=priorDays; i<=endIndex; i++) {
@@ -1186,9 +1260,11 @@
       for (const code of shifts) {
         const need = code !== "T" || needed[i];
         const owners = nurses.filter(n => n.work[i] === code);
-        if (owners.length > Number(need) || owners.some(n => !n.available[i][code])) {
-          impossible = "Une affectation protégée est incompatible avec la couverture ou une absence le "+days[i]+".";
-        }
+        const label=D.SHIFT_LABELS[code],who=owners.map(n=>n.person.name).join(", ");
+        const unavailable=owners.find(n=>!n.available[i][code]);
+        if (!need && owners.length) impossible ??= "Le "+days[i]+", le "+label+" est fermé mais reste attribué à "+who+". Vérifiez cette affectation enregistrée.";
+        else if (owners.length>1) impossible ??= "Le "+days[i]+", "+label+" est attribué à plusieurs IDE dont l’affectation est protégée ou conservée : "+who+".";
+        else if (unavailable) impossible ??= unavailable.person.name+" ne peut pas assurer le "+label+" du "+days[i]+". Vérifiez son absence, ses dates de présence et la protection du poste.";
         if (!need) continue;
         // The mandatory weekend units are Fri/Sat/Sun for N and Sat/Sun for J.
         // Check saved members of a unit across month boundaries, even if the
@@ -1199,14 +1275,14 @@
         if (i !== Math.max(priorDays,anchor)) continue;
         const group=Array.from({length:groupEnd-anchor+1},(_,offset)=>anchor+offset);
         if (code === "T" && group.some(j=>!needed[j]))
-          impossible = "Un TIIH de week-end doit pouvoir être couvert au même poste samedi et dimanche.";
+          impossible ??= "Un TIIH de week-end doit pouvoir être couvert au même poste samedi et dimanche.";
         const fixed = nurses.filter(n => group.some(j => n.work[j] === code));
-        if (fixed.length > 1) impossible = "Plusieurs IDE sont protégées pour le même bloc de week-end du "+days[anchor]+".";
+        if (fixed.length > 1) impossible ??= "Plusieurs IDE sont protégées pour le même bloc de week-end du "+days[anchor]+".";
         const candidates = nurses.filter(n => (!fixed.length || n === fixed[0]) && group.every(j => {
           const openBoundary = (j<priorDays || j>endIndex) && !n.known[j];
           return n.available[j][code] && (n.work[j]===code || (!n.work[j] && (n.editable[j] || openBoundary)));
         }));
-        if (!candidates.length) impossible = "Aucune IDE disponible pour "+D.SHIFT_LABELS[code]+" le "+days[i]+".";
+        if (!candidates.length) impossible ??= "Aucune IDE disponible pour "+D.SHIFT_LABELS[code]+" le "+days[i]+".";
         if ((anchor<priorDays || groupEnd>endIndex) && fixed.length===1 && candidates.length) {
           const n=fixed[0], scratch=n.work.slice();
           const night=code==="N", bounds=D.phaseBounds(state.settings,night?"N":"J");
@@ -1232,17 +1308,17 @@
           tasks.push({i, code, indices:group, candidates});
       }
       if (weekdays[i] === 6 && i > priorDays && needed[i] !== needed[i-1])
-        impossible = "Le TIIH du week-end doit être couvert samedi et dimanche ensemble.";
+        impossible ??= "Le TIIH du week-end doit être couvert samedi et dimanche ensemble.";
     }
     const ctx={days,start,end,horizon,endIndex,monthEnd,nurses,tasks,needed,shiftMinutes,...timing,
-      includeLookahead,impossible,repairDates};
+      includeLookahead,impossible,repairDates,hasSavedWork:nurses.some(n=>n.savedDuty.some(Boolean))};
     if (!impossible) setWorkTargets(state,D,ctx);
     return ctx;
   }
 
   // A positive age is a night regime, a negative age a day regime. Work backwards
   // to choose a legal trajectory that also reaches any known future regime.
-  function trajectory(nurse, days, phaseBounds, preferredLength, offset, nightFirst, anchor) {
+  function trajectory(nurse, days, phaseBounds, preferredLength, offset, nightFirst, anchor, preferSaved) {
     const max=Math.max(phaseBounds.J.max,phaseBounds.N.max);
     const size = max * 2;
     let nextCosts = new Float64Array(size);
@@ -1271,6 +1347,8 @@
           if (age >= bounds.min && nextCosts[switched] < cost) {cost=nextCosts[switched]; to=switched;}
         }
         costs[k] = cost + (preferredNight===night ? 0 : 5) + Math.abs(preferredAge-age)*0.02;
+        if (preferSaved && nurse.savedPhase[i] && nurse.savedPhase[i] !== (night?age:-age))
+          costs[k]+=20;
         links[i*size+k] = to;
       }
       nextCosts=costs;
@@ -1445,6 +1523,47 @@
     return grouped;
   }
 
+  // Only actual duty codes distinguish two proposals. Unknown or reviewed rest,
+  // phase age, locks, confirmation and anticipatory rows do not create a variant.
+  function referenceGrid(ctx,reference) {
+    const idSet=new Set(ctx.nurses.map(n=>n.id));
+    let otherJobs=0;
+    const rows=ctx.nurses.map(()=>[]);
+    for(let i=priorDays;i<=ctx.monthEnd;i++) {
+      const team=reference.assignments[ctx.days[i]] || {};
+      for (const [id,entry] of Object.entries(team))
+        if (!idSet.has(id) && shifts.includes(entry?.shift)) otherJobs++;
+      ctx.nurses.forEach((n,j)=>{
+        const shift=team[n.id]?.shift;
+        rows[j][i]=shifts.includes(shift)?shift:null;
+      });
+    }
+    return {rows,otherJobs};
+  }
+
+  function differentDutyCells(ref,work,monthEnd,firstOnly=false) {
+    let count=ref.otherJobs;
+    for (let n=0;n<work.length;n++) for (let i=priorDays;i<=monthEnd;i++) {
+      if ((work[n][i]||null)!==ref.rows[n][i]) {
+        if (firstOnly) return 1;
+        count++;
+      }
+    }
+    return count;
+  }
+
+  function forcedIdenticalMonth(ctx) {
+    if (!ctx.references.length) return false;
+    const monthly=ctx.tasks.filter(t=>t.i<=ctx.monthEnd);
+    if (monthly.some(t=>t.candidates.length!==1)) return false;
+    const forced=ctx.nurses.map(n=>n.work.slice());
+    for (const t of monthly) {
+      const row=forced[ctx.nurses.indexOf(t.candidates[0])];
+      for (const i of t.indices) row[i]=t.code;
+    }
+    return ctx.references.some(ref=>!differentDutyCells(ref,forced,ctx.monthEnd,true));
+  }
+
   function search(ctx, state, D, random, attempt, deadline) {
     const {nurses,days,tasks} = ctx;
     const settings=state.settings;
@@ -1458,6 +1577,7 @@
     const anchor=10959; // Monday, 3 January 2000.
     const phaseMap=new Map();
     const phaseBounds={J:D.phaseBounds(settings,"J"),N:D.phaseBounds(settings,"N")};
+    const preferSaved=ctx.hasSavedWork && attempt%8===0;
     for (let pos=0; pos<order.length; pos++) {
       const n=order[pos];
       n.loads={...n.initialLoads};
@@ -1465,18 +1585,19 @@
       for(let i=priorDays;i<=ctx.monthEnd;i++)
         if (n.work[i]==="J" || n.work[i]==="N") n.counts[n.work[i]]++;
       const stagger=attempt%4===0 ? 0 : (attempt%4===1 ? (pos%3)*5 : Math.floor(random()*length));
-      n.phases=trajectory(n,days,phaseBounds,length,stagger,pos%2===0,anchor);
+      n.phases=trajectory(n,days,phaseBounds,length,stagger,pos%2===0,anchor,preferSaved);
       if (!n.phases) return null;
       phaseMap.set(n.id,n.phases);
     }
     const rawSlots=tasks.map(t=>({...t, candidates:t.candidates.filter(n =>
       t.indices.every(j => (n.phases[j]>0)===(t.code==="N")))}));
     if (rawSlots.some(t=>!t.candidates.length)) return null;
-    const slots=groupPreferredSeries(ctx,rawSlots,attempt);
+    const slots=groupPreferredSeries(ctx,rawSlots,preferSaved?7:attempt);
     slots.sort((a,b)=>a.i-b.i || a.candidates.length-b.candidates.length);
+    const work=nurses.map(n=>n.work);
     let nodes=0;
     function visit(k) {
-      if (k===slots.length) return true;
+      if (k===slots.length) return ctx.references.every(ref=>differentDutyCells(ref,work,ctx.monthEnd,true)>0);
       if (++nodes>900 || ((nodes&31)===0 && now()>deadline)) return false;
       const {code,indices,candidates,i}=slots[k];
       const year=days[i].slice(0,4);
@@ -1498,6 +1619,7 @@
         if(inSameSeries(n.work[i-1]) || inSameSeries(n.work[indices.at(-1)+1])) cost-=1600;
         if(code==="J" && ctx.weekdays[i]===4 && canExtendFriday(ctx,n,i)) cost-=1150;
         if(code==="J" && ctx.weekdays[i]===5 && n.work[i-1]==="J") cost-=2300;
+        if (preferSaved) for (const j of changed) if (n.savedDuty[j]===code) cost-=4000;
         cost+=random()*900;
         ranked.push({n,changed,cost});
       }
@@ -1545,6 +1667,7 @@
       }
     }
     const nextShortfall=nextWeekendShortfall(ctx);
+    const changedAssignments=ctx.references.length?differentDutyCells(ctx.references[0],work,ctx.monthEnd):0;
     // Restore the working arrays between independent search attempts.
     for(const n of nurses) for(let i=0;i<days.length;i++) {
       const temporary=(i<priorDays || i>ctx.endIndex) && !n.known[i];
@@ -1565,12 +1688,15 @@
       shiftImbalance+=counts.reduce((sum,count)=>sum+(count-average)**2,0);
     }
     const score=shiftImbalance*180 + balance*0.2 + (isolated+isolatedDays)*320 + skippedFriday*520;
-    return {candidate,isolated,isolatedDays,score,nextShortfall};
+    return {candidate,isolated,isolatedDays,score,nextShortfall,changedAssignments};
   }
 
-  function generate(state, year, month, {timeLimitMs=1800, seed=Date.now(), includeLookahead=false}={}) {
+  function generate(state, year, month, {timeLimitMs=1800, seed=Date.now(), includeLookahead=false,differentFrom=[]}={}) {
     const D=globalThis.PlannerDomain;
     const forecast=includeLookahead===true;
+    const references=Array.isArray(differentFrom)?differentFrom:[differentFrom];
+    if (references.some(ref=>!ref?.assignments || typeof ref.assignments!=="object" || Array.isArray(ref.assignments)))
+      return result("invalid_input","La référence à comparer doit contenir les affectations enregistrées.");
     const deadline=now()+Math.max(100,Math.min(15000,Number(timeLimitMs)||1800));
     let ctx;
     try { ctx=prepare(state,year,month,D,forecast); }
@@ -1580,7 +1706,12 @@
     for(let stage=0;stage<=1;stage++) {
       const retry=stage===0 && ctx.repairDates?.size;
       const stop=retry?now()+(deadline-now())*0.4:deadline;
-      if (ctx.impossible && !retry) return result("infeasible",ctx.impossible);
+      if (ctx.impossible && !retry) return {...result("infeasible",ctx.impossible),conflictDate:ctx.conflictDate||null};
+      if (!ctx.impossible) {
+        ctx.references=references.map(ref=>referenceGrid(ctx,ref));
+        if (forcedIdenticalMonth(ctx)) return result("no_alternative",
+          "Chaque poste du mois a déjà une seule affectation possible. Pour obtenir une variante, vérifiez les postes et repos protégés ainsi que les disponibilités.");
+      }
       let firstSuccess=null;
       for(let attempt=0;!ctx.impossible && attempt<250 && now()<stop;attempt++) {
         if(firstSuccess!==null && best.nextShortfall===0 && now()-firstSuccess>950) break;
@@ -1596,12 +1727,14 @@
       ctx=prepare(state,year,month,D,forecast,ctx.repairDates);
       repaired=true;
     }
-    if (!best) return result("unknown","Aucune proposition trouvée dans le temps de recherche. Vérifiez les absences, les postes protégés et les besoins TIIH. Vous pouvez relancer la recherche.");
+    if (!best) return result("unknown",references.length ?
+      "Aucune répartition différente n’a été trouvée dans le temps de recherche. Vérifiez les disponibilités, les postes protégés et les week-ends aux limites du mois. Vous pouvez relancer la recherche." :
+      "Aucune proposition trouvée dans le temps de recherche. Vérifiez les absences, les postes protégés et les besoins TIIH. Vous pouvez relancer la recherche.");
     let message="Proposition contrôlée du "+ctx.start+" au "+ctx.end+".";
     if (forecast) message="Proposition contrôlée, avec anticipation jusqu’au "+ctx.horizon+".";
     if (repaired) message+=" Des affectations prévisionnelles autour des dates en conflit ont été recalculées.";
     return {...result("feasible",message,
-      best.candidate,ctx.horizon,best.isolated), isolatedDays:best.isolatedDays};
+      best.candidate,ctx.horizon,best.isolated), isolatedDays:best.isolatedDays,changedAssignments:best.changedAssignments};
   }
   globalThis.PlannerEngine=Object.freeze({generate});
 })();
@@ -2282,6 +2415,7 @@
   let page = "planning", period = today.slice(0,7), week = -1, demo = false;
   let planningMode="team", selectedNurseId=null, editingTiih=null, teamDay=null;
   let proposal = null, includeLookahead = false, absenceId = "", storageAvailable = true, stored = null, broken = false, busy = false, state;
+  let generationFailure=null, undoClear=null, checkingClear=null;
   let cloud=null, formEdited=false;
   const cloudActive=()=>Boolean(cloud && !demo);
   const key = () => baseKey+(demo?".demo":"");
@@ -2318,7 +2452,7 @@
     const encoded = JSON.stringify(candidate);
     if(cloudActive()) {
       cloud.enqueue(encoded,message);
-      state=candidate; broken=false; proposal=null;
+      state=candidate; broken=false; proposal=null; generationFailure=null; undoClear=null;
       notify(); render(); return;
     }
     if(storageAvailable) {
@@ -2331,7 +2465,7 @@
         catch { storageAvailable=false; }
       }
     }
-    state=candidate; broken=false; proposal=null;
+    state=candidate; broken=false; proposal=null; generationFailure=null; undoClear=null;
     notify(message+(storageAvailable?"":" L'enregistrement dans le navigateur est indisponible. Exportez une sauvegarde JSON avant de fermer."),!storageAvailable);
     render();
   }
@@ -2357,16 +2491,17 @@
   const dataAtt = (name,val) => 'data-'+name+'="'+esc(val)+'"';
   function setPeriod(value) {
     if(!/^\d{4}-(0[1-9]|1[0-2])$/.test(value) || Number(value.slice(0,4))<1900 || Number(value.slice(0,4))>2199) throw Error("Choisissez un mois entre 1900 et 2199.");
-    period=value; teamDay=null; week=-1; proposal=null; includeLookahead=false; absenceId=""; notify(); render();
+    period=value; teamDay=null; week=-1; proposal=null; generationFailure=null; undoClear=null; includeLookahead=false; absenceId=""; notify(); render();
   }
   function switchSpace(toDemo) {
     if(cloudActive() && cloud.pending) throw Error("Terminez l’enregistrement dans Google Sheets ou rechargez la version partagée avant de changer d’équipe.");
-    demo=toDemo; page="planning"; teamDay=null; week=-1; proposal=null; includeLookahead=false; absenceId=""; notify(); openSpace();
+    demo=toDemo; page="planning"; teamDay=null; week=-1; proposal=null; generationFailure=null; undoClear=null; includeLookahead=false; absenceId=""; notify(); openSpace();
   }
   function syncStatus() {
     const status=document.getElementById("storage-status"), controls=document.getElementById("cloud-controls");
     controls.innerHTML="";
     main.inert=nav.inert=cloudActive() && cloud.phase==="reloading";
+    updateUndoControl();
     if(!cloudActive()) {
       status.textContent=demo?"Équipe fictive · Essai local":storageAvailable?"Sur cet appareil":"Sauvegarde JSON requise";
       return;
@@ -2458,24 +2593,133 @@
       ["SMUR J","SMUR N","SMUR J","SMUR N","TIIH","Jour","Nuit","Jour","Nuit"].map(l=>'<th scope="col">'+l+'</th>').join("")+
       '</tr></thead><tbody>'+rows.map((r,i)=>'<tr><th scope="row">'+esc(r.name)+'</th>'+counts[i].map(v=>'<td>'+v+'</td>').join("")+'</tr>').join("")+'</tbody></table></div><p class="hint">Le cumul additionne les postes SMUR de l’historique et du mois, hors chevauchements avec une absence. Un poste est isolé si aucun poste du même régime ne figure la veille ou le lendemain. Le TIIH compte comme une journée pour ce calcul.</p></section>';
   }
+  const monthlyTables=["assignments","phases","reviewed"];
+  const monthText=value=>dateFmt(value+"-01",{month:"long",year:"numeric"});
+  const hasMonthData=(s,all)=>all.some(day=>monthlyTables.some(table=>Object.keys(s[table][day]||{}).length>0));
+  const hasMonthShifts=(s,all)=>all.some(day=>Object.values(s.assignments[day]||{}).some(a=>a.shift!=="-"));
+  function generationFailureView() {
+    const f=generationFailure;
+    const adjacent=/^\d{4}-\d{2}-\d{2}$/.test(f.conflictDate||"") && !f.conflictDate.startsWith(period);
+    return '<aside class="notice search-failure" role="alert"><div><strong>'+(f.status==="no_alternative"?"Aucune autre répartition possible":"La recherche n’a pas produit de proposition")+'</strong><p>'+esc(f.message)+'</p>'+
+      (f.detail?'<p>'+esc(f.detail)+'</p>':'')+(proposal?'<p>La proposition affichée reste disponible.</p>':'')+'</div><div class="actions">'+
+      btn("month-checks","Examiner le mois enregistré")+(f.quota?btn("page","Renseigner la quotité","",dataAtt("page","team")):"")+
+      (adjacent?btn("conflict-month","Voir "+monthText(f.conflictDate.slice(0,7)),"",dataAtt("month",f.conflictDate.slice(0,7))):"")+'</div></aside>';
+  }
+  function showMonthChecks() {
+    const issues=D.validateSchedule(state,...range()).filter(i=>i.severity==="error");
+    dialog.innerHTML='<h2 id="dialog-title">Contrôles de '+esc(monthText(period))+'</h2><p>Planning enregistré de toute l’équipe.</p>'+
+      (issues.length?'<div class="scroll month-issues"><ul>'+issues.map(i=>'<li>'+esc(i.message)+'</li>').join("")+'</ul></div>':'<p>Aucun conflit relevé dans le mois enregistré. Vous pouvez relancer la recherche ou examiner les postes protégés.</p>')+
+      '<div class="actions">'+btn("close","Fermer")+(hasMonthData(state,days())?btn("clear-month","Effacer le mois…","danger"):"")+'</div>';
+    if(!dialog.open) dialog.showModal();
+  }
+  function moveToConflictMonth(value) {
+    if(!proposal) {setPeriod(value);return;}
+    dialog.innerHTML='<h2 id="dialog-title">Ouvrir '+esc(monthText(value))+' ?</h2><p>La proposition de '+esc(monthText(period))+' sera écartée à la sortie du mois. Vous pouvez revenir à la proposition pour la conserver.</p><div class="actions">'+
+      btn("close","Revenir à la proposition")+btn("confirm-conflict-month","Écarter et ouvrir le mois","primary",dataAtt("month",value))+'</div>';
+    dialog.showModal();
+  }
+  function clearPreview(form) {
+    return D.previewClearMonth(state,year(),month(),{includeLocked:form.elements["include-locked"].checked,includeConfirmed:form.elements["include-confirmed"].checked});
+  }
+  function syncClearPreview(form) {
+    const {removed,kept,changed}=clearPreview(form);
+    form.clearSnapshot={state,period,key:key(),google:cloudActive(),revision:cloudActive()?cloud.revision:null};
+    const items=[["shifts","Postes affectés"],["rests","Repos saisis"],["locked","Dont cases verrouillées"],["confirmed","Dont postes confirmés"],
+      ["phases","Repères de période jour/nuit"],["lockedPhases","Dont repères verrouillés"],["reviewed","Journées renseignées par IDE"]];
+    form.querySelector(".clear-counts").innerHTML=items.map(([k,label])=>'<tr><th scope="row">'+label+'</th><td>'+removed[k]+'</td><td>'+kept[k]+'</td></tr>').join("");
+    form.querySelector('[type=submit]').disabled=!changed;
+    form.querySelector(".clear-hint").textContent=changed?"Les journées effacées pourront être planifiées à nouveau.":"Aucun élément à effacer avec ces options.";
+  }
+  function showClearMonth() {
+    dialog.innerHTML='<form data-form="clear-month"><h2 id="dialog-title">Effacer '+esc(monthText(period))+' ?</h2>'+
+      '<p>Du '+esc(shortDay(range()[0]))+' au '+esc(shortDay(range()[1]))+' inclus, pour <strong>toute l’équipe</strong>.</p>'+
+      '<p>Les autres mois, les agents, les contrats, les absences, l’OAT et les dates et durées prévues des TIIH sont conservés.</p>'+
+      (proposal?'<p>La proposition à l’écran sera écartée si vous confirmez.</p>':'')+
+      '<fieldset class="clear-options"><legend>Effacer également</legend><label><input type="checkbox" name="include-locked"> Inclure les cases et les périodes verrouillées</label>'+
+      '<label><input type="checkbox" name="include-confirmed"> Inclure les postes confirmés</label></fieldset>'+
+      '<div class="scroll"><table class="clear-table"><thead><tr><th>Dans ce mois</th><th>Effacés</th><th>Conservés</th></tr></thead><tbody class="clear-counts"></tbody></table></div>'+
+      '<p class="hint clear-hint"></p><p class="issueerror" role="alert"></p><div class="actions">'+btn("close","Annuler")+'<button type="submit" class="danger">Confirmer l’effacement</button></div></form>';
+    syncClearPreview(dialog.querySelector("form"));
+    if(!dialog.open) dialog.showModal();
+  }
+  async function clearSavedMonth(form) {
+    if(checkingClear) return;
+    const snapshot=form.clearSnapshot;
+    if(snapshot.google!==cloudActive() || snapshot.key!==key() || snapshot.period!==period)
+      throw Error("L’équipe ou le mois affiché a changé. Rouvrez l’aperçu pour confirmer son périmètre.");
+    if(cloudActive()) {
+      if(cloud.pending) throw Error("Terminez l’enregistrement en cours dans Google Sheets, puis confirmez l’effacement.");
+      const submitButton=form.querySelector('[type=submit]'), options=form.querySelector('fieldset');
+      submitButton.disabled=true; options.disabled=true; checkingClear=snapshot;
+      try {await cloud.read({force:true});}
+      finally {checkingClear=null; submitButton.disabled=false; options.disabled=false;}
+      if(!dialog.open || !form.isConnected || snapshot.key!==key() || snapshot.period!==period) return;
+      if(!["ready","empty"].includes(cloud.phase)) throw Error("Impossible de vérifier la version partagée. Vérifiez la connexion puis confirmez à nouveau.");
+    }
+    if(snapshot.state!==state || (cloudActive() && snapshot.revision!==cloud.revision)) {
+      syncClearPreview(form);
+      throw Error("Le planning a changé depuis l’aperçu. Vérifiez les nouveaux nombres avant de confirmer à nouveau.");
+    }
+    const preview=clearPreview(form);
+    if(!preview.changed) return;
+    const all=days(), previous={};
+    for(const table of monthlyTables) previous[table]=Object.fromEntries(all.filter(day=>Object.hasOwn(state[table],day)).map(day=>[day,state[table][day]]));
+    save(preview.state,"Effacement de "+monthText(period)+" enregistré.");
+    if(cloudActive() || storageAvailable) {
+      undoClear={previous,body:JSON.stringify(state),after:state,period,key:key(),google:cloudActive(),serverRevision:null};
+    }
+    dialog.close(); render();
+  }
+  function canUndoClear() {
+    return undoClear && undoClear.period===period && undoClear.key===key() && undoClear.google===cloudActive() && undoClear.after===state &&
+      (!cloudActive() || !cloud.pending && undoClear.serverRevision!==null && undoClear.serverRevision===cloud.revision);
+  }
+  function updateUndoControl() {
+    const button=main.querySelector('[data-act=undo-clear]');
+    if(button) button.disabled=!canUndoClear();
+  }
+  async function undoMonthClear() {
+    if(!canUndoClear()) throw Error("Le planning a changé ou un enregistrement est en cours.");
+    const mark=undoClear;
+    if(cloudActive()) {
+      await cloud.read({force:true});
+      if(cloud.phase!=="ready" || undoClear!==mark || !canUndoClear()) throw Error("L’effacement ne peut pas être annulé : la version partagée a changé ou sa relecture a échoué.");
+    } else if(localStorage.getItem(key())!==mark.body) {
+      undoClear=null; render(); throw Error("Une autre fenêtre a modifié le planning. Rechargez-le pour voir sa version actuelle.");
+    }
+    const recovered=clone(state);
+    for(const table of monthlyTables) for(const day of days()) {
+      if(Object.hasOwn(mark.previous[table],day)) recovered[table][day]=mark.previous[table][day];
+      else delete recovered[table][day];
+    }
+    save(recovered,"Effacement de "+monthText(mark.period)+" annulé.");
+  }
   function planningView() {
     const [start,end]=range(), all=days(), s=proposal?.candidate||state;
     const issueList=D.validateSchedule(s,start,end);
     const monthName=dateFmt(start,{month:"long",year:"numeric"});
     const roster=rosterDuring(s,all);
     const missing=roster.filter(n=>all.some(day=>D.isActive(n,day) && D.quotaOn(n,day)==null)).length;
-    const blocked=busy || !!proposal || !roster.length;
-    const tools=picker()+btn("edit-day","Modifier une journée","",blocked?"disabled":"")+
-      btn("generate",busy?"Recherche en cours…":"Générer une proposition","primary",blocked || missing?"disabled":"");
+    const savedMonth=hasMonthData(state,all), hasShifts=hasMonthShifts(state,all);
+    const generationLabel=proposal||hasShifts?"Faire une autre proposition":"Générer une proposition";
+    const tools=picker()+btn("edit-day","Modifier une journée","",busy||proposal||!roster.length?"disabled":"")+
+      btn("generate",busy?"Recherche en cours…":generationLabel,"primary",busy||!roster.length?"disabled":"");
     let out=title(monthName[0].toUpperCase()+monthName.slice(1),tools);
-    if(!proposal && roster.length) out+='<div class="generation-scope"><label><input type="checkbox" id="include-lookahead"'+
-      (includeLookahead?' checked':'')+'> Inclure l’anticipation après ce mois</label></div>';
+    out+='<div class="month-controls"><div class="generation-scope">'+(roster.length?'<label><input type="checkbox" id="include-lookahead"'+
+      (includeLookahead?' checked':'')+'> Inclure l’anticipation après ce mois</label>'+(proposal?'<small>Pour la prochaine recherche.</small>':''):'')+'</div><div class="actions">'+
+      (savedMonth?btn("clear-month","Effacer le mois…","danger",busy?"disabled":""):"")+
+      (undoClear&&!proposal?btn("undo-clear","Annuler l’effacement","",canUndoClear()?"":"disabled"):"")+'</div></div>';
+    if(generationFailure) out+=generationFailureView();
     if(!demo && !proposal && !Object.keys(state.assignments).length)
       out+='<aside class="notice"><p><strong>'+(cloudActive() && cloud.phase==="empty"?"Démarrer dans ce classeur":"Démarrer le planning")+'</strong><br>Vous pouvez reprendre les postes d’un ancien planning ou essayer avec des noms fictifs.</p><div class="actions">'+btn("page","Importer un planning","",dataAtt("page","files"))+btn("demo","Essayer avec une équipe fictive")+'</div></aside>';
-    if(missing && !proposal) out+='<aside class="notice"><p><strong>'+missing+' quotité'+(missing>1?'s':'')+' à compléter</strong><br>Renseignez les temps de travail pour générer le premier planning.</p>'+btn("page","Configurer l’équipe","primary",dataAtt("page","team"))+'</aside>';
+    if(missing && !proposal) out+='<aside class="notice"><p><strong>'+missing+' quotité'+(missing>1?'s':'')+' à compléter</strong><br>Renseignez les quotités manquantes pour pouvoir générer ce mois.</p>'+btn("page","Configurer l’équipe","",dataAtt("page","team"))+'</aside>';
     if(!missing && !proposal && roster.some(n=>D.isActive(n,start) && D.baseQuotaOn(n,start)!=null && D.baseQuotaOn(n,start)<100))
       out+='<aside class="notice"><p>Des contrats de base sont à temps partiel au '+esc(shortDay(start))+'. Vous pouvez choisir la date de leur passage à 100 %.</p>'+btn("page","Modifier les quotités","",dataAtt("page","team"))+'</aside>';
-    if(proposal) out+='<aside class="proposal"><div><strong>Proposition à examiner</strong><p>'+esc(proposal.message)+'</p><small>'+(proposal.end?'Affectations proposées jusqu’au '+esc(shortDay(proposal.end)):'')+'</small></div><div class="actions">'+btn("accept","Conserver la proposition","primary")+btn("discard","Écarter")+'</div></aside>';
+    if(proposal) {
+      const changed=proposal.changedAssignments;
+      const diff=changed>0?'<p><strong>'+changed+' case'+(changed>1?'s d’affectation modifiées':' d’affectation modifiée')+'</strong> par rapport '+(proposal.afterPreview?'à la proposition précédente.':'au planning enregistré.')+'</p>':'';
+      out+='<aside class="proposal"><div><strong>Proposition à examiner</strong><p>'+esc(proposal.message)+'</p>'+diff+'<small>'+(proposal.end?'Affectations proposées jusqu’au '+esc(shortDay(proposal.end)):'')+'</small></div><div class="actions">'+btn("accept","Conserver la proposition","primary")+btn("discard","Écarter")+'</div></aside>';
+    }
     if(planningMode==="team") out+='<div class="metricgrid">'+["J","N","T"].map(code=>{
       const need=all.filter(d=>code!=="T"||D.tiihRequired(s,d));
       const covered=need.filter(d=>Object.values(s.assignments[d]||{}).filter(a=>a.shift===code).length===1).length;
@@ -2924,6 +3168,7 @@
     showImportDialog('<h2 id="dialog-title">Importer cet historique ?</h2><p>'+files.length+' fichier(s) · '+result.state.nurses.length+' IDE dans l’équipe après import.</p>'+weekendImportWarnings(state,result.state)+'<ul>'+warnings.map(text=>'<li>'+esc(text)+'</li>').join("")+'</ul>'+importQuotaField()+'<p role="alert" class="issueerror"></p><div class="actions">'+btn("close","Annuler")+btn("restore-data","Importer les plannings","primary")+'</div>');
   }
   async function submitForm(form) {
+    if(form.dataset.form==="clear-month") return clearSavedMonth(form);
     if(form.dataset.form==="edit-day") {
       const {candidate,changes}=dayEdits(form);
       if(changes.length) save(candidate,"Journée du "+shortDay(form.dataset.day)+" enregistrée.");
@@ -3044,15 +3289,43 @@
       await globalThis.PlannerTeamManagement.action(button,{state,save,dialog,render}); return;
     }
     if(action==="generate") {
+      const original=state, oldProposal=proposal, target=period, forecast=includeLookahead, all=days();
+      const missing=state.nurses.flatMap(n=>{
+        const date=all.find(d=>D.isActive(n,d) && D.quotaOn(n,d)==null);
+        return date?[n.name+" le "+shortDay(date)]:[];
+      });
+      if(missing.length) {
+        generationFailure={quota:true,message:"Quotité manquante pour "+missing.join(", ")+". Renseignez les quotités aux dates indiquées dans Équipe et règles."};
+        notify();render();return;
+      }
       busy=true; button.disabled=true; button.textContent="Recherche en cours…";
       try {
         await new Promise(resolve=>setTimeout(resolve,40));
-        const result=E.generate(state,year(),month(),{timeLimitMs:2500,includeLookahead});
-        if(result.candidate) {proposal=result; week=-1; notify();} else notify(result.message,true);
+        if(state!==original || period!==target || proposal!==oldProposal) return;
+        const differentFrom=[];
+        if(oldProposal) differentFrom.push(oldProposal.candidate);
+        if(hasMonthShifts(original,all)) differentFrom.push(original);
+        const result=E.generate(original,year(),month(),{timeLimitMs:2500,includeLookahead:forecast,differentFrom});
+        if(result.candidate) {
+          proposal={...result,afterPreview:Boolean(oldProposal)}; generationFailure=null; week=-1;
+          notify();
+        } else {
+          const known=D.validateSchedule(original,...range(),false).find(i=>i.severity==="error" && i.day && i.nurse_id);
+          generationFailure={message:result.message,status:result.status,conflictDate:result.conflictDate,
+            detail:known && !result.conflictDate?"Point à vérifier dans le planning enregistré. "+known.message:""};
+          notify();
+        }
+      } catch(error) {
+        generationFailure={message:error.message || String(error)};notify();
       } finally {busy=false; render();}
       return;
     }
     switch(action) {
+      case "clear-month": showClearMonth();break;
+      case "month-checks": showMonthChecks();break;
+      case "undo-clear": await undoMonthClear();break;
+      case "conflict-month": moveToConflictMonth(button.dataset.month);break;
+      case "confirm-conflict-month": dialog.close();setPeriod(button.dataset.month);break;
       case "cloud-read": {
         if(cloudActive()) await cloud.read({force:!state});
         break;
@@ -3090,7 +3363,7 @@
           save(clone(proposal.candidate),scope); includeLookahead=false; render();
         }
         break;
-      case "discard": proposal=null; notify("Proposition écartée."); render(); break;
+      case "discard": proposal=null; generationFailure=null; notify("Proposition écartée."); render(); break;
       case "cell": showEditor(button.dataset.nurse,button.dataset.day); break;
       case "edit-day": showDayEditor(button.dataset.day||defaultDay()); break;
       case "export-pdf": {
@@ -3186,6 +3459,7 @@
   document.addEventListener("change",e=>{
     try {
       const t=e.target;
+      if(t.form?.dataset.form==="clear-month") syncClearPreview(t.form);
       if(t.form?.dataset.form==="cell" && t.name==="shift") refreshCellWeekends(t.form);
       if(t.form && !dialog.contains(t)) formEdited=true;
       if(t.form?.dataset.form==="absence" && ["from","nurse"].includes(t.name)) {
@@ -3220,16 +3494,28 @@
       }
     } catch(err) {infoError(err);}
   });
-  window.addEventListener("storage",e=>{if(!cloudActive() && (e.key===key() || e.key===null)) notify("Une autre fenêtre a modifié les données. Rechargez cette page avant d’enregistrer.",true);});
+  window.addEventListener("storage",e=>{if(!cloudActive() && (e.key===key() || e.key===null)) {
+    undoClear=null;updateUndoControl();notify("Une autre fenêtre a modifié les données. Rechargez cette page avant d’enregistrer.",true);
+  }});
   const bridge=globalThis.google?.script?.run;
   if(bridge) {
     cloud=globalThis.PlannerSheetsSync.connect(bridge,{
       active:()=>!demo,
       canRefresh:()=>!demo && !dialog.open && !proposal && !busy && !formEdited,
       prepare:body=>body===null?D.newState(Number(today.slice(0,4))):D.migrateState(JSON.parse(body)),
-      receive:value=>{state=value;proposal=null;absenceId="";notify();render();},
+      receive:value=>{
+        if(checkingClear && checkingClear.state===state && checkingClear.revision===cloud.revision && JSON.stringify(state)===JSON.stringify(value)) return;
+        if(undoClear) {
+          if(undoClear.serverRevision===cloud.revision && undoClear.body===JSON.stringify(value)) undoClear.after=value;
+          else undoClear=null;
+        }
+        state=value;proposal=null;generationFailure=null;absenceId="";notify();render();
+      },
       changed:()=>{if(!state && cloud.phase==="read-error") render(); else syncStatus();},
-      saved:(message,warning)=>{if(!demo) notify(message+" Enregistré dans Google Sheets."+(warning?" "+warning:""));}
+      saved:(message,warning)=>{
+        if(undoClear && undoClear.after===state && undoClear.google) {undoClear.serverRevision=cloud.revision;updateUndoControl();}
+        if(!demo) notify(message+" Enregistré dans Google Sheets."+(warning?" "+warning:""));
+      }
     });
     const refresh=()=>{if(cloudActive() && state && !document.hidden) void cloud.read();};
     window.addEventListener("focus",refresh);
