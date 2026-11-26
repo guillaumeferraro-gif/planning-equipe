@@ -24,6 +24,8 @@
 .generation-scope input{vertical-align:middle}
 .grid th .date-edit{display:block;width:100%;padding:.15rem 0;background:transparent;border:0;color:inherit;font:inherit;border-radius:4px}
 .grid th .date-edit:hover,.grid th .date-edit:focus-visible{background:var(--wash);color:var(--teal)}
+.pdf-actions a{border:1px solid var(--line);border-radius:8px;padding:.57rem .9rem;text-decoration:none;color:var(--teal);font-weight:600}
+.pdf-actions a.primary{color:white;background:var(--teal);border-color:var(--teal)}
 .day-preview{font-size:.88rem}.day-preview ul{margin:.4rem 0;padding-left:1.3rem}
 @media print{.generation-scope{display:none}}
 </style>
@@ -2384,7 +2386,8 @@
     const headings=shown.map(day=>{
       const label=esc(dateFmt(day,{weekday:full?"narrow":"short"}))+'<span>'+Number(day.slice(-2))+'</span>';
       const attributes=dataAtt("day",day)+' aria-label="'+esc("Modifier la journée du "+shortDay(day))+'"';
-      return '<th scope="col" class="'+(D.weekday(day)>4?"weekend":"")+'">'+(proposal?label:btn("edit-day",label,"date-edit",attributes))+'</th>';
+      const heading=proposal?label:'<button type="button" class="date-edit" data-act="edit-day" '+attributes+'>'+label+'</button>';
+      return '<th scope="col" class="'+(D.weekday(day)>4?"weekend":"")+'">'+heading+'</th>';
     }).join("");
     const rows=roster.map(n=>'<tr><th scope="row">'+esc(n.name)+'</th>'+shown.map(day=>{
       const {code,label,a,unknown}=cellInfo(s,n.id,day);
@@ -2701,6 +2704,17 @@
     document.body.append(a); a.click(); a.remove();
     setTimeout(()=>URL.revokeObjectURL(url),1500);
   }
+  function showPdfLinks(blob,filename) {
+    const url=URL.createObjectURL(blob);
+    dialog.innerHTML='<h2 id="dialog-title">Le PDF est prêt</h2><p class="subtle">'+esc(filename)+'</p>'+
+      '<div class="actions pdf-actions"><a class="primary" data-pdf-download target="_blank" rel="noopener">Télécharger le PDF</a>'+
+      '<a data-pdf-open target="_blank" rel="noopener">Ouvrir le PDF</a>'+btn("close","Fermer")+'</div>';
+    const link=dialog.querySelector("[data-pdf-download]");
+    link.href=url; link.download=filename;
+    dialog.querySelector("[data-pdf-open]").href=url;
+    dialog.addEventListener("close",()=>setTimeout(()=>URL.revokeObjectURL(url),30000),{once:true});
+    dialog.showModal();
+  }
   function csv(name, rows) {
     const quote=value=>{
       let t=String(value??"");
@@ -2929,7 +2943,8 @@
         try {
           const result=await globalThis.PlannerPDF.exportMonth({state:proposal?.candidate||state,year:year(),month:month(),
             nurseId:planningMode==="individual"?selectedNurseId:null,proposal:Boolean(proposal),demo});
-          download(result.filename,result.blob,"application/pdf");
+          if(cloud) showPdfLinks(result.blob,result.filename);
+          else download(result.filename,result.blob,"application/pdf");
         } finally {button.disabled=false;}
         break;
       }
