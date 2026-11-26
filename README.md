@@ -67,7 +67,7 @@ Dans **Imports et exports**, choisissez **Ajouter un historique mensuel** pour r
 
 Dans **Planning**, la vue **Équipe** s’ouvre sur **Mois entier**. Les boutons **1–7**, **8–14**, etc. affichent une semaine. Choisissez **Par IDE** puis **IDE affichée** pour consulter les postes du mois d’une personne. Le signe **?** indique une date non renseignée et le tiret **—** un repos connu. Les deux vues présentent aussi la proposition avant validation. Vous pouvez exporter le mois complet en CSV ou utiliser **Exporter le mois de cette IDE en CSV** dans la vue individuelle. Dans **Compteurs**, vous pouvez aussi exporter le suivi annuel de chaque IDE.
 
-Pour télécharger le planning en **PDF**, choisissez le mois et la vue voulue, puis cliquez sur **Exporter en PDF** au-dessus du tableau. En vue **Équipe**, le PDF contient la grille mensuelle de toute l’équipe. En vue **Par IDE**, choisissez d’abord la personne dans **IDE affichée** pour obtenir ses dates, ses postes et ses horaires. Le PDF couvre toujours le mois complet, même si une seule semaine est affichée à l’écran.
+Pour télécharger le planning en **PDF**, choisissez le mois et la vue voulue, puis cliquez sur **Exporter en PDF** au-dessus du tableau. Dans Google Sheets, cliquez ensuite sur **Télécharger le PDF** ou sur **Ouvrir le PDF** pour le consulter. En vue **Équipe**, le PDF contient la grille mensuelle de toute l’équipe. En vue **Par IDE**, choisissez d’abord la personne dans **IDE affichée** pour obtenir ses dates, ses postes et ses horaires. Le PDF couvre toujours le mois complet, même si une seule semaine est affichée à l’écran.
 
 ## Ancienne version Python
 
