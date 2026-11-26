@@ -40,20 +40,34 @@ Dans **Équipe et règles**, ouvrez **Effectif**, puis **Ajouter un agent**. Ind
 
 Dans **Quotités temporaires**, cliquez sur **Ajouter une période** et choisissez l’IDE, le pourcentage et les dates de début et de fin incluses. Par exemple, une IDE dont la quotité de base est de 100 % peut passer à 80 % du 1ᵉʳ au 30 juin. Le 1ᵉʳ juillet, l’application reprend automatiquement la quotité de base applicable à cette date. Pour transférer les contrats et ces périodes sur un autre appareil, utilisez la sauvegarde JSON complète. Le CSV mensuel sert à transférer les postes.
 
-## Adapter un TIIH pour une seule journée
+## Adapter un ou plusieurs postes de TIIH
 
-Dans **TIIH**, cliquez sur **Modifier** sur la ligne du poste concerné. Dans **Adapter une journée**, choisissez l’action voulue, puis **Appliquer au TIIH**.
+Pour un seul poste, ouvrez **TIIH → Un poste**, puis cliquez sur **Modifier** sur la ligne du poste concerné. Dans **Adapter une journée**, choisissez l’action voulue, puis **Appliquer au TIIH**.
 
 - **Modifier la durée** conserve la date du poste. Saisissez la durée en heures et minutes, de `0:01` à `48:00`. Si le poste dépasse minuit, l’heure de fin précise le jour de sortie. Par exemple, `5:30` donne un TIIH de **9 h à 14 h 30**. **Rétablir la durée de 7 h 42** ramène ce poste à son horaire habituel.
 - **Supprimer** retire uniquement ce TIIH du planning. **Déplacer** le reporte à une autre date avec sa durée. **Restaurer** le remet à sa date d’origine avec la durée mémorisée.
 
+Pour appliquer l’une de ces cinq actions à plusieurs dates, ouvrez **TIIH → Plusieurs postes**.
+
+1. Cochez les postes voulus ou cliquez sur **Sélectionner le mois affiché**. Pour choisir, par exemple, les jeudis de décembre, ouvrez **Sélectionner par période**, indiquez les dates de début et de fin incluses, cochez uniquement **Jeudi**, puis cliquez sur **Ajouter une période**. Vous pouvez changer de mois pour compléter la sélection. **Vider la sélection** permet de recommencer.
+2. Choisissez l’action. Pour **Déplacer**, indiquez un décalage en jours par rapport à la date d’origine de chaque poste. Un décalage de `+1` place ainsi les TIIH du mardi le mercredi suivant.
+3. Cliquez sur **Examiner les changements**. Le tableau affiche l’avant et l’après pour chaque poste, ainsi que les affectations à réattribuer. Cliquez sur **Appliquer les changements** pour valider la sélection.
+
 La durée du poste compte dans le temps de travail de l’IDE affectée. Le CSV mensuel reprend la durée des TIIH affectés, par exemple `TIIH (5:30)`. Pour conserver les suppressions, déplacements et durées personnalisées lors d’un changement d’appareil, emportez la **sauvegarde JSON complète** depuis **Imports et exports**.
+
+## Corriger les affectations d’une seule journée
+
+Dans **Planning**, cliquez sur **Modifier une journée** ou sur la date en tête de la grille d’équipe. Choisissez les IDE pour le SMUR J, le SMUR N et, si le poste est ouvert, le TIIH. Un poste ouvert sans titulaire apparaît comme **À pourvoir**. Pour conserver votre choix lors d’une prochaine génération, cochez **Verrouiller les cases modifiées pour les prochains calculs**. Cliquez sur **Enregistrer cette journée**. Cette correction porte uniquement sur les affectations de cette date. Pour modifier une seule case, cliquez directement sur celle de l’IDE concernée.
+
+Pour préparer un mois complet, utilisez **Générer une proposition**. Par défaut, **Conserver la proposition** enregistre uniquement le mois affiché. Si vous voulez également enregistrer les affectations proposées au-delà du dernier jour, cochez **Inclure l’anticipation après ce mois** avant de générer la proposition.
 
 ## Importer un historique ou exporter le planning
 
 Dans **Imports et exports**, choisissez **Ajouter un historique mensuel** pour reprendre les anciens fichiers `planning_AAAA_MM.json` ou un CSV mensuel exporté par cette application. Associez les noms aux IDE de votre équipe et examinez les affectations avant de les reprendre. À la confirmation de l’import, vous pouvez choisir la date de passage de toute l’équipe à 100 %. Laissez le champ vide pour conserver les quotités existantes. Les postes de l’historique connu servent à équilibrer les prochaines propositions. Dans **Planning**, consultez **Répartition des postes par IDE** pour comparer les gardes. Une sauvegarde JSON complète de Planning IDE restaure aussi l’équipe, les absences et les paramètres sur un autre appareil.
 
 Dans **Planning**, la vue **Équipe** s’ouvre sur **Mois entier**. Les boutons **1–7**, **8–14**, etc. affichent une semaine. Choisissez **Par IDE** puis **IDE affichée** pour consulter les postes du mois d’une personne. Le signe **?** indique une date non renseignée et le tiret **—** un repos connu. Les deux vues présentent aussi la proposition avant validation. Vous pouvez exporter le mois complet en CSV ou utiliser **Exporter le mois de cette IDE en CSV** dans la vue individuelle. Dans **Compteurs**, vous pouvez aussi exporter le suivi annuel de chaque IDE.
+
+Pour télécharger le planning en **PDF**, choisissez le mois et la vue voulue, puis cliquez sur **Exporter en PDF** au-dessus du tableau. En vue **Équipe**, le PDF contient la grille mensuelle de toute l’équipe. En vue **Par IDE**, choisissez d’abord la personne dans **IDE affichée** pour obtenir ses dates, ses postes et ses horaires. Le PDF couvre toujours le mois complet, même si une seule semaine est affichée à l’écran.
 
 ## Ancienne version Python
 
