@@ -677,6 +677,45 @@
         reviewed_days:calendar.filter(d=>isActive(n,d) && state.reviewed[d]?.includes(n.id)).length};
     });
   }
+  const fullWeekendOffsets=Object.freeze([0,1,2,7,8,9]);
+
+  // The caller supplies the first Friday. Only actual duty start dates count.
+  function fullWeekendPairAt(work,firstFridayIndex) {
+    return fullWeekendOffsets.every(offset=>shifts.includes(work[firstFridayIndex+offset]));
+  }
+
+  function workedWeekendPair(state,nurse,days) {
+    if (!nurse || !isActive(nurse,days[0]) || !isActive(nurse,days[9])) return false;
+    const work=days.map(day=>state.assignments[day]?.[nurse.id]?.shift);
+    return fullWeekendPairAt(work,0);
+  }
+
+  function newConsecutiveFullWeekends(before,after,changedDays) {
+    const selected=new Set(changedDays),starts=new Set();
+    for (const day of selected) {
+      const weekDay=weekday(day);
+      if (weekDay<4) continue;
+      const friday=addDays(day,4-weekDay);
+      starts.add(friday);
+      starts.add(addDays(friday,-7));
+    }
+    const previous=new Map((before?.nurses??[]).map(nurse=>[nurse.id,nurse]));
+    const current=new Map(after.nurses.map(nurse=>[nurse.id,nurse])),issues=[];
+    for (const firstFriday of [...starts].sort()) {
+      const days=dates(firstFriday,addDays(firstFriday,9)),secondFriday=days[7];
+      // Report on the second weekend when possible, including a single selected Sunday.
+      const day=[7,8,9,0,1,2].map(offset=>days[offset]).find(d=>selected.has(d));
+      for (const id of Object.keys(after.assignments[firstFriday]??{})) {
+        const nurse=current.get(id);
+        if (!workedWeekendPair(after,nurse,days) || (before && workedWeekendPair(before,previous.get(id),days))) continue;
+        issues.push({nurse_id:id,firstFriday,secondFriday,day,message:nurse.name+
+          " · deux week-ends complets consécutifs, du "+firstFriday+" au "+days[2]+" et du "+secondFriday+
+          " au "+days[9]+". La même IDE ne peut pas assurer les deux blocs du vendredi au dimanche."});
+      }
+    }
+    return issues;
+  }
+
   function validateSchedule(state,start,end,coverage=true) {
     const issues=[];
     function issue(code,message,day=null,nid=null,severity="error") {
@@ -699,6 +738,8 @@
       issue("rest_convention","Choisissez la convention de repos dans les paramètres.",null,null,"warning");
     if (state.nurses.some(n=>monthDays.some(d=>quotaOn(n,d)===null)))
       issue("quota","Certaines quotités doivent être renseignées.",null,null,"warning");
+    for (const conflict of newConsecutiveFullWeekends(null,state,monthDays))
+      issue("consecutive_full_weekends",conflict.message,conflict.day,conflict.nurse_id);
     if (coverage) for (const d of monthDays) {
       const assigned=state.nurses.filter(n=>isActive(n,d)).map(n=>state.assignments[d]?.[n.id]).filter(Boolean);
       for (const code of shifts) {
@@ -929,6 +970,7 @@
   globalThis.PlannerDomain=Object.freeze({SHIFT_MINUTES,SHIFT_LABELS,ABSENCE_KINDS,dates,addDays,weekday,
     monthBounds,formatMinutes,parseDuration,newState,quotaOn,setContract,isHoliday,defaultTiih,tiihRequired,
     changeTiih,previewTiihBatch,applyTiihBatch,shiftInterval,absentFor,absenceOn,setAbsence,creditMinutes,validateState,annualTotals,validateSchedule,
+    fullWeekendPairAt,newConsecutiveFullWeekends,
     importLegacyFiles,calendarWeekBounds,migrateState,phaseBounds,tiihSource,tiihDay,
     getTiihDuration,setTiihDuration,shiftMinutes,tiihWallEnd,isActive,activeOn:isActive,baseQuotaOn,
     setQuotaPeriod,removeQuotaPeriod,addNurse,nurseExitImpact,setNurseExit});
@@ -942,7 +984,7 @@
   const shifts = ["N", "J", "T"];
   // A duty can start two dates before it finishes. Include both tails of every
   // 168-hour window, with one more civil day for clock changes.
-  const priorDays = 10;
+  const priorDays = 12; // Include a two-day weekend continuation on either edge.
   const weeklyMinutes = 7 * 24 * 60;
   const workLimit = 48 * 60;
   const now = () => performance.now();
@@ -1080,17 +1122,24 @@
         const phase = state.phases[day]?.[nurse.id];
         oldPhase[i] = active[i] && phase && (day < start || (day > end && !reopen.has(i)) || phase.locked)
           ? (phase.mode === "N" ? phase.age : -phase.age) : null;
-        if (!editable[i] && old?.shift && old.shift !== "-") {
+        if (!editable[i] && old?.shift && old.shift !== "-" && (active[i] || (day>=start && day<=horizon))) {
           work[i] = old.shift;
           if (day >= start && day <= horizon) initialLoads[day.slice(0,4)] += shiftMinutes[i][old.shift];
         }
         available[i] = Object.fromEntries(shifts.map(code => [code, active[i] && !D.absentFor(state,nurse.id,day,code)]));
       });
-      return {id:nurse.id, person:nurse, active, quotas, work, editable, known, oldPhase, available, initialLoads, historicalShifts};
+      return {id:nurse.id, person:nurse, active, quotas, work, editable, known, oldPhase, available,
+        boundaryDuty:[],initialLoads, historicalShifts};
     });
     // First try to repair vacancies in a saved forecast without disturbing
     // other work. If this fails, only the surrounding forecast week may reopen.
-    const timing = {shiftIntervals, restIntervals, calendarWeeks, weekdays};
+    // A required weekend unit can extend past the editable interval. The
+    // missing part of that unit must remain feasible without writing it.
+    const boundaryWeekends=[];
+    if (weekdays[priorDays]>=5) boundaryWeekends.push(priorDays-weekdays[priorDays]+4);
+    if (weekdays[endIndex]===4 || weekdays[endIndex]===5) boundaryWeekends.push(endIndex-weekdays[endIndex]+4);
+    const timing = {shiftIntervals, restIntervals, calendarWeeks, weekdays, boundaryWeekends,
+      fullWeekendPairAt:D.fullWeekendPairAt};
     const repairDates=new Set();
     for (let i=monthEnd+1; i<=endIndex; i++) {
       const day=days[i], row=state.assignments[day] || {};
@@ -1119,6 +1168,11 @@
           return {repairDates,impossible:n.person.name+" : deux jours de repos obligatoires après les trois prises de poste du "+
             days[first]+" au "+days[first+2]+". Une affectation enregistrée empêche ce repos."};
       }
+      for (let friday=priorDays-9; friday<=endIndex; friday++) {
+        if (weekdays[friday]===4 && consecutiveFullWeekends(timing,n.work,friday))
+          return {repairDates,impossible:n.person.name+" : les week-ends des vendredis "+days[friday]+
+            " et "+days[friday+7]+" imposent deux blocs vendredi–samedi–dimanche consécutifs."};
+      }
     }
     for (let i=priorDays; i<=endIndex; i++) {
       if (needed[i]) {
@@ -1144,7 +1198,6 @@
         const groupEnd = weekdays[i] >= groupStart ? anchor+6-groupStart : i;
         if (i !== Math.max(priorDays,anchor)) continue;
         const group=Array.from({length:groupEnd-anchor+1},(_,offset)=>anchor+offset);
-        const indices=group.filter(j=>j>=priorDays && j<=endIndex);
         if (code === "T" && group.some(j=>!needed[j]))
           impossible = "Un TIIH de week-end doit pouvoir être couvert au même poste samedi et dimanche.";
         const fixed = nurses.filter(n => group.some(j => n.work[j] === code));
@@ -1154,13 +1207,35 @@
           return n.available[j][code] && (n.work[j]===code || (!n.work[j] && (n.editable[j] || openBoundary)));
         }));
         if (!candidates.length) impossible = "Aucune IDE disponible pour "+D.SHIFT_LABELS[code]+" le "+days[i]+".";
-        if (!indices.every(j => fixed[0]?.work[j] === code))
-          tasks.push({i, code, indices, candidates});
+        if ((anchor<priorDays || groupEnd>endIndex) && fixed.length===1 && candidates.length) {
+          const n=fixed[0], scratch=n.work.slice();
+          const night=code==="N", bounds=D.phaseBounds(state.settings,night?"N":"J");
+          for (const j of group) {
+            const p=n.oldPhase[j];
+            if (p!==null && ((p>0)!==night || Math.abs(p)<=j-anchor || Math.abs(p)+groupEnd-j>bounds.max))
+              return {repairDates,impossible:n.person.name+" : la période jour/nuit enregistrée le "+days[j]+
+                " ne permet pas de couvrir le bloc de week-end du "+days[anchor]+" au "+days[groupEnd]+"."};
+            n.boundaryDuty[j]=code;
+            scratch[j]=code;
+          }
+          if (group.some(j=>!legalDay(timing,{work:scratch},j))) {
+            const week=group.some(j=>!withinCalendarWeek(timing,scratch,j,j));
+            const limit=week?"le plafond de 44 h sur la semaine du lundi au dimanche":
+              "les limites de travail ou les repos obligatoires";
+            return {repairDates,impossible:n.person.name+" : le bloc de week-end imposé du "+days[anchor]+
+              " au "+days[groupEnd]+" est incompatible avec "+limit+"."};
+          }
+        }
+        // A boundary unit is tested and backtracked as one complete unit. Its
+        // exterior positions are temporary and never enter loads or saved rows.
+        if (!group.every(j => fixed[0]?.work[j] === code))
+          tasks.push({i, code, indices:group, candidates});
       }
       if (weekdays[i] === 6 && i > priorDays && needed[i] !== needed[i-1])
         impossible = "Le TIIH du week-end doit être couvert samedi et dimanche ensemble.";
     }
-    const ctx={days,start,end,horizon,endIndex,monthEnd,nurses,tasks,needed,shiftMinutes,shiftIntervals,restIntervals,calendarWeeks,weekdays,impossible,repairDates};
+    const ctx={days,start,end,horizon,endIndex,monthEnd,nurses,tasks,needed,shiftMinutes,...timing,
+      includeLookahead,impossible,repairDates};
     if (!impossible) setWorkTargets(state,D,ctx);
     return ctx;
   }
@@ -1179,7 +1254,8 @@
       const position = firstDay+i-anchor+offset;
       const preferredAge = ((position % preferredLength)+preferredLength)%preferredLength+1;
       const preferredNight = Math.abs(Math.floor(position/preferredLength)%2) === Number(nightFirst);
-      const requiredMode = nurse.work[i] ? nurse.work[i]==="N" : null;
+      const duty=nurse.work[i] || nurse.boundaryDuty[i];
+      const requiredMode = duty ? duty==="N" : null;
       for (let k=0; k<size; k++) {
         const night = k>=max, age = k%max+1;
         const bounds=night ? phaseBounds.N : phaseBounds.J;
@@ -1253,6 +1329,21 @@
 
   const dayShift = shift => shift === "J" || shift === "T";
 
+  function consecutiveFullWeekends(ctx,work,firstFriday) {
+    if (ctx.fullWeekendPairAt(work,firstFriday)) return true;
+    // At a month boundary, an assigned night commits its holder to all three
+    // dates. A Friday duty followed by either half of the Sat/Sun pair does
+    // too. These implied duties never enter the saved neighboring month.
+    for (const boundary of ctx.boundaryWeekends) {
+      if (boundary!==firstFriday && boundary!==firstFriday+7) continue;
+      const other=boundary===firstFriday ? firstFriday+7 : firstFriday;
+      if (!work[other] || !work[other+1] || !work[other+2]) continue;
+      const fri=work[boundary], sat=work[boundary+1], sun=work[boundary+2];
+      if (fri==="N" || sat==="N" || sun==="N" || (fri && (sat || sun))) return true;
+    }
+    return false;
+  }
+
   function legalDay(ctx, nurse, i) {
     const work=nurse.work;
     const [start,end]=ctx.restIntervals[i][work[i]];
@@ -1265,6 +1356,11 @@
       if (work[first] && work[first+1] && work[first+2] &&
           (work[first+3] || work[first+4])) return false;
     const weekday=ctx.weekdays[i];
+    if (weekday>=4) {
+      const friday=i-weekday+4;
+      if (consecutiveFullWeekends(ctx,work,friday-7) || consecutiveFullWeekends(ctx,work,friday))
+        return false;
+    }
     if ((weekday===0 && dayShift(work[i]) && work[i-1]) ||
         (weekday===6 && dayShift(work[i+1]))) return false;
     if (!withinCalendarWeek(ctx,work,i,i)) return false;
@@ -1287,6 +1383,34 @@
     const legal=[i,i+1,i+2].every(j=>legalDay(ctx,nurse,j));
     nurse.work.splice(i,3,...previous);
     return legal;
+  }
+
+  // A valid last week may still consume all the night workers eligible for the
+  // following weekend. Prefer a plan which leaves both SMUR blocks feasible.
+  // This is a tie-breaker on valid months: no future work is saved or required.
+  function nextWeekendShortfall(ctx) {
+    if (ctx.includeLookahead) return 0;
+    const friday=ctx.endIndex+((4-ctx.weekdays[ctx.endIndex]+7)%7 || 7);
+    let shortfall=0;
+    for (const code of ["N","J"]) {
+      const group=code==="N" ? [friday,friday+1,friday+2] : [friday+1,friday+2];
+      const feasible=ctx.nurses.some(n=>{
+        if (!group.every(j=>{
+          // An IDE entering after month-end may not yet have a chosen phase.
+          const phase=n.phases?.[j] ?? n.oldPhase[j];
+          return n.available[j][code] && (!phase || (phase>0)===(code==="N")) &&
+            (n.work[j]===code || (!n.known[j] && !n.work[j])) &&
+            !ctx.nurses.some(other=>other!==n && other.work[j]===code);
+        })) return false;
+        const original=group.map(j=>n.work[j]);
+        for (const j of group) n.work[j]=code;
+        const ok=group.every(j=>legalDay(ctx,n,j));
+        group.forEach((j,k)=>{n.work[j]=original[k];});
+        return ok;
+      });
+      if (!feasible) shortfall+=code==="N"?2:1;
+    }
+    return shortfall;
   }
 
   // Try the regular 2 + 2 + 3 weekday pattern first. A grouped trial may fail
@@ -1367,7 +1491,8 @@
         let cost=n.loads[year]-n.targetAt[i];
         // The same assignment represents a larger fraction of a short
         // contract, including when a temporary percentage begins mid-series.
-        for (const j of changed) cost+=ctx.shiftMinutes[j][code]*(100/n.quotas[j]-1)*0.5;
+        for (const j of changed) if (j>=priorDays && j<=ctx.endIndex)
+          cost+=ctx.shiftMinutes[j][code]*(100/n.quotas[j]-1)*0.5;
         if(code==="J" || code==="N") cost+=1080*(n.counts[code]-n.expectedCount[i]);
         const inSameSeries=code==="N" ? (shift=>shift==="N") : dayShift;
         if(inSameSeries(n.work[i-1]) || inSameSeries(n.work[indices.at(-1)+1])) cost-=1600;
@@ -1380,12 +1505,14 @@
       for (const {n,changed} of ranked) {
         for (const j of changed) {
           n.work[j]=code;
+          if (j<priorDays || j>ctx.endIndex) continue;
           n.loads[days[j].slice(0,4)] += ctx.shiftMinutes[j][code];
           if(j<=ctx.monthEnd && code!=="T") n.counts[code]++;
         }
         if (visit(k+1)) return true;
         for (const j of changed) {
           n.work[j]=null;
+          if (j<priorDays || j>ctx.endIndex) continue;
           n.loads[days[j].slice(0,4)] -= ctx.shiftMinutes[j][code];
           if(j<=ctx.monthEnd && code!=="T") n.counts[code]--;
         }
@@ -1417,8 +1544,12 @@
         }
       }
     }
+    const nextShortfall=nextWeekendShortfall(ctx);
     // Restore the working arrays between independent search attempts.
-    for(const n of nurses) for(let i=priorDays;i<=ctx.endIndex;i++) if(n.editable[i]) n.work[i]=null;
+    for(const n of nurses) for(let i=0;i<days.length;i++) {
+      const temporary=(i<priorDays || i>ctx.endIndex) && !n.known[i];
+      if(n.editable[i] || temporary) n.work[i]=null;
+    }
     for(const day of days.slice(priorDays,ctx.endIndex+1)) {
       if(!candidate.reviewed[day].length) delete candidate.reviewed[day];
     }
@@ -1434,7 +1565,7 @@
       shiftImbalance+=counts.reduce((sum,count)=>sum+(count-average)**2,0);
     }
     const score=shiftImbalance*180 + balance*0.2 + (isolated+isolatedDays)*320 + skippedFriday*520;
-    return {candidate,isolated,isolatedDays,score};
+    return {candidate,isolated,isolatedDays,score,nextShortfall};
   }
 
   function generate(state, year, month, {timeLimitMs=1800, seed=Date.now(), includeLookahead=false}={}) {
@@ -1452,9 +1583,10 @@
       if (ctx.impossible && !retry) return result("infeasible",ctx.impossible);
       let firstSuccess=null;
       for(let attempt=0;!ctx.impossible && attempt<250 && now()<stop;attempt++) {
-        if(firstSuccess!==null && now()-firstSuccess>950) break;
+        if(firstSuccess!==null && best.nextShortfall===0 && now()-firstSuccess>950) break;
         const found=search(ctx,state,D,random,attempt,stop);
-        if (!found || (best && found.score>=best.score)) continue;
+        if (!found || (best && (found.nextShortfall>best.nextShortfall ||
+            (found.nextShortfall===best.nextShortfall && found.score>=best.score)))) continue;
         const issues=D.validateSchedule(found.candidate,ctx.start,ctx.horizon);
         if(issues.some(issue=>issue.severity==="error")) continue;
         best=found;
@@ -1790,6 +1922,10 @@
   const roles = ["J","N","T"];
   const owners = (row,role) => Object.keys(row).filter(id=>row[id].shift===role);
   const protectedCell = cell => cell?.locked || cell?.confirmed;
+  function checkWeekends(state,candidate,day) {
+    const conflicts=D.newConsecutiveFullWeekends(state,candidate,[day]);
+    if(conflicts.length) throw Error(conflicts.map(c=>c.message).join("\n"));
+  }
 
   function edit(state,day,choices,lock) {
     const old = state.assignments[day] || {}, next = {...old}, wanted = new Map();
@@ -1822,10 +1958,11 @@
     }
     if (!changes.length) return {candidate:state,changes};
     const reviewed = [...new Set([...(state.reviewed[day]||[]),...changes.map(c=>c.id)])];
-    return {changes,candidate:{...state,assignments:{...state.assignments,[day]:next},
-      reviewed:{...state.reviewed,[day]:reviewed}}};
+    const candidate={...state,assignments:{...state.assignments,[day]:next},reviewed:{...state.reviewed,[day]:reviewed}};
+    checkWeekends(state,candidate,day);
+    return {changes,candidate};
   }
-  globalThis.PlannerDayEditor=Object.freeze({edit,owners,protectedCell});
+  globalThis.PlannerDayEditor=Object.freeze({edit,owners,protectedCell,checkWeekends});
 })();
 
 </script>
@@ -2479,6 +2616,16 @@
     dialog.innerHTML='<form data-form="cell" '+dataAtt("nurse",id)+' '+dataAtt("day",day)+'><p class="caps">'+esc(shortDay(day))+'</p><h2 id="dialog-title">'+esc(nameOf(id))+'</h2><div class="fields"><label>Poste<select name="shift">'+["-","J","N","T"].map(c=>opt(c,D.SHIFT_LABELS[c]+(c==="T"?" · "+shiftHours(state,day,c):""),c===(a?.shift||"-"))).join("")+'</select></label></div>'+(absent?'<p class="hint">Une absence est enregistrée à cette date.</p>':"")+'<p><label><input type="checkbox" name="locked" '+(a?.locked?"checked":"")+'> Verrouiller le poste ou le repos</label></p><p><label><input type="checkbox" name="confirmed" '+(a?.confirmed?"checked":"")+'> Confirmer le poste réalisé</label></p><p role="alert" class="issueerror"></p><div class="actions">'+btn("close","Annuler")+submit("Enregistrer")+'</div></form>';
     dialog.showModal();
   }
+  function refreshCellWeekends(form) {
+    const {day,nurse:id}=form.dataset, row=state.assignments[day]||{};
+    const shift=form.elements.shift.value;
+    const alert=form.querySelector('[role=alert]'), saveButton=form.querySelector('[type=submit]');
+    alert.textContent=""; saveButton.disabled=false;
+    if((row[id]?.shift||"-")===shift) return;
+    const candidate={...state,assignments:{...state.assignments,[day]:{...row,[id]:{...row[id],shift}}}};
+    try {globalThis.PlannerDayEditor.checkWeekends(state,candidate,day);}
+    catch(error) {alert.textContent=error.message;saveButton.disabled=true;}
+  }
   function absenceView() {
     const old=state.absences.find(a=>a.id===absenceId);
     const timed=old && (!old.start.slice(11).startsWith("00:00") || !old.end.slice(11).startsWith("00:00"));
@@ -2661,6 +2808,7 @@
       <li>44 h maximum du lundi au dimanche et 48 h sur toute période de 168 h.</li>
       <li>Après trois dates de travail consécutives, les deux dates suivantes sont réservées au repos.</li>
       <li>Week-end de nuit du vendredi au dimanche. Week-end de jour le samedi et le dimanche, avec le vendredi de préférence. Le lundi qui suit, aucun poste de jour.</li>
+      <li>Une même IDE ne peut pas travailler vendredi, samedi et dimanche deux semaines de suite. Chaque poste SMUR jour, SMUR nuit ou TIIH compte, même si le type de poste change au cours du week-end.</li>
       </ul><div class="bottomaction">${submit("Enregistrer les règles")}</div></form></section></div><div id="team-management">${globalThis.PlannerTeamManagement.view(state,{day:effective})}</div>`;
   }
   function annualRows() {
@@ -2754,6 +2902,12 @@
     }).join("");
     showImportDialog('<form data-form="history-map"><h2 id="dialog-title">Associer les noms de l’historique</h2><p>Pour chaque nom du fichier, choisissez l’IDE correspondante dans votre équipe ou créez une nouvelle fiche.</p><div class="scroll"><table><thead><tr><th>Nom du fichier</th><th>IDE de l’équipe</th></tr></thead><tbody>'+mapping+'</tbody></table></div><p role="alert" class="issueerror"></p><div class="actions">'+btn("close","Annuler")+submit("Examiner l’import")+'</div></form>');
   }
+  function weekendImportWarnings(before,after) {
+    const conflicts=D.newConsecutiveFullWeekends(before,after,Object.keys(after.assignments));
+    if(!conflicts.length) return "";
+    return '<details open><summary>'+conflicts.length+' conflit(s) de week-ends complets consécutifs</summary><div class="scroll" style="max-height:10rem"><ul>'+
+      conflicts.map(c=>'<li>'+esc(c.message)+'</li>').join("")+'</ul></div><p class="hint">Les affectations de cet historique seront reprises telles quelles.</p></details>';
+  }
   function previewHistory(mapping=new Map()) {
     const files=historyFiles.map(file=>{
       const renamed=Object.create(null);
@@ -2767,7 +2921,7 @@
     const result=D.importLegacyFiles(state,files);
     stagedImport=result;
     const warnings=[...historyFiles.flatMap(file=>file.warnings??[]),...result.warnings];
-    showImportDialog('<h2 id="dialog-title">Importer cet historique ?</h2><p>'+files.length+' fichier(s) · '+result.state.nurses.length+' IDE dans l’équipe après import.</p><ul>'+warnings.map(text=>'<li>'+esc(text)+'</li>').join("")+'</ul>'+importQuotaField()+'<p role="alert" class="issueerror"></p><div class="actions">'+btn("close","Annuler")+btn("restore-data","Importer les plannings","primary")+'</div>');
+    showImportDialog('<h2 id="dialog-title">Importer cet historique ?</h2><p>'+files.length+' fichier(s) · '+result.state.nurses.length+' IDE dans l’équipe après import.</p>'+weekendImportWarnings(state,result.state)+'<ul>'+warnings.map(text=>'<li>'+esc(text)+'</li>').join("")+'</ul>'+importQuotaField()+'<p role="alert" class="issueerror"></p><div class="actions">'+btn("close","Annuler")+btn("restore-data","Importer les plannings","primary")+'</div>');
   }
   async function submitForm(form) {
     if(form.dataset.form==="edit-day") {
@@ -2793,6 +2947,7 @@
         if(!candidate.assignments[day]) candidate.assignments[day]={};
         candidate.assignments[day][id]={shift,locked,confirmed};
         candidate.reviewed[day]=[...new Set([...(candidate.reviewed[day]||[]),id])];
+        globalThis.PlannerDayEditor.checkWeekends(state,candidate,day);
         save(candidate,"Modification du brouillon enregistrée."); dialog.close(); break;
       }
       case "team": {
@@ -2877,7 +3032,7 @@
         if(!file?.size||file.size>20*1024*1024) throw Error("Choisissez un fichier JSON de moins de 20 Mo.");
         const value=D.migrateState(JSON.parse((await file.text()).replace(/^\uFEFF/,"")));
         stagedImport={state:value,placeholderContractIds:[]};
-        dialog.innerHTML='<h2 id="dialog-title">Restaurer cette sauvegarde ?</h2><p>'+value.nurses.length+' IDE · '+Object.keys(value.assignments).length+' dates · '+value.absences.length+' absences</p><p>Cette sauvegarde remplacera les données de '+(demo?"l’équipe fictive":cloudActive()?"ce classeur Google Sheets partagé":"votre équipe")+'.</p>'+importQuotaField()+'<p class="issueerror" role="alert"></p><div class="actions">'+btn("close","Annuler")+btn("restore-data","Remplacer les données","primary")+'</div>';
+        dialog.innerHTML='<h2 id="dialog-title">Restaurer cette sauvegarde ?</h2><p>'+value.nurses.length+' IDE · '+Object.keys(value.assignments).length+' dates · '+value.absences.length+' absences</p><p>Cette sauvegarde remplacera les données de '+(demo?"l’équipe fictive":cloudActive()?"ce classeur Google Sheets partagé":"votre équipe")+'.</p>'+weekendImportWarnings(null,value)+importQuotaField()+'<p class="issueerror" role="alert"></p><div class="actions">'+btn("close","Annuler")+btn("restore-data","Remplacer les données","primary")+'</div>';
         dialog.showModal(); break;
       }
     }
@@ -3031,6 +3186,7 @@
   document.addEventListener("change",e=>{
     try {
       const t=e.target;
+      if(t.form?.dataset.form==="cell" && t.name==="shift") refreshCellWeekends(t.form);
       if(t.form && !dialog.contains(t)) formEdited=true;
       if(t.form?.dataset.form==="absence" && ["from","nurse"].includes(t.name)) {
         const form=t.form;
