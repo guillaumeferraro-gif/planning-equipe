@@ -15,11 +15,15 @@
 .viewbar{border:1px solid var(--line);border-radius:9px;padding:3px}.viewbar button{border-color:transparent;padding:.42rem .85rem}.date-range{margin-bottom:.85rem}.grid.full-grid{min-width:1030px}.full-grid th:first-child{width:96px}.full-grid thead th{font-size:.73rem}.full-grid thead span{font-size:.92rem}.full-grid td,.full-grid th{padding:.24rem .09rem}.full-grid .cell{font-size:.82rem;min-height:27px}.grid .unassigned,.agenda .unassigned{background:transparent;color:#647879;font-weight:400}.person-tools{display:flex;align-items:end;justify-content:space-between;gap:.7rem;flex-wrap:wrap}.person-tools select{min-width:150px}.person-summary{display:flex;gap:.45rem 1rem;padding:.65rem .8rem;margin:.85rem 0;background:#f0f5f1;border-radius:6px;flex-wrap:wrap;font-size:.9rem}.agenda{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));grid-template-rows:repeat(16,auto);grid-auto-flow:column;gap:0 1.4rem}.agenda-day{display:grid;align-items:center;grid-template-columns:6.2rem minmax(5.6rem,.7fr) minmax(6rem,1fr);gap:.45rem;width:100%;text-align:left;font-size:.84rem;background:#fff;border:1px solid transparent;border-bottom-color:var(--line);border-radius:0;padding:.45rem .3rem}.agenda-day.weekend{background:#f5f7f5}.agenda-day:disabled{opacity:1}.agenda-day .agenda-date{font-variant-numeric:tabular-nums}.agenda-label{justify-self:start;border-radius:4px;padding:.16rem .36rem;font-weight:600}.agenda-label.empty,.agenda-time{color:var(--muted);font-weight:400}.agenda-day:not(:disabled):hover{border-color:var(--teal);background:#eef6f1}.agenda-time{line-height:1.3}
 @media(max-width:960px){.agenda{display:block}.agenda-day{grid-template-columns:minmax(6rem,.75fr) minmax(6rem,.7fr) minmax(6rem,1fr)}}
 @media(max-width:580px){.agenda-day{gap:.2rem;grid-template-columns:5.2rem minmax(4.8rem,.85fr) minmax(5rem,1fr)}.person-tools{align-items:start;flex-direction:column}.person-tools button{font-size:.83rem}.grid.full-grid{min-width:1020px}}
+.fields[hidden]{display:none}.tiih-adjusted{margin-top:.7rem;color:var(--teal);font-size:.86rem}.tiih-cols .panel{min-width:0}.tiih-cols .scroll th,.tiih-cols .scroll td{white-space:nowrap}.tiih-cols form>.hint{margin-top:.55rem}
+@media(min-width:851px){.tiih-cols{grid-template-columns:minmax(250px,.72fr) minmax(360px,1.5fr)}}
+.grid .X,.agenda-label.X{color:#5c6c69;background:#e9edeb;font-weight:400}.teamtbl td:first-child{width:47%}.teamtbl td:nth-child(2) input{max-width:6.2em;width:100%}.teamtbl td:last-child{font-size:.88rem}.cols>.panel{min-width:0}
+.sheets-guide{margin-bottom:1rem;color:var(--muted);font-size:.9rem}.sheets-guide a{color:var(--teal)}#cloud-controls:not(:empty){margin-top:.7rem}.sync-error{background:#fcefe8;border-color:#e6c2b6}
 </style>
 </head>
 <body>
 <header class="brandbar"><span aria-hidden="true" class="brandmark">+</span><strong>Planning IDE</strong><span class="subtle">SMUR · TIIH</span><small id="storage-status"></small></header>
-<div class="wrap"><nav class="nav" id="nav" aria-label="Rubriques"></nav><div id="feedback" class="status" role="status" aria-live="polite"></div><main id="app"></main></div>
+<div class="wrap"><nav class="nav" id="nav" aria-label="Rubriques"></nav><div id="feedback" class="status" role="status" aria-live="polite"></div><div id="cloud-controls" aria-live="polite"></div><main id="app"></main></div>
 <dialog id="editor" aria-labelledby="dialog-title"></dialog><noscript>Activez JavaScript dans le navigateur pour ouvrir le planning.</noscript>
 <script>
 /* Shared business rules for the offline planner. Civil dates use YYYY-MM-DD. */
@@ -30,6 +34,7 @@
   const ABSENCE_KINDS = Object.freeze(["Maladie", "Congés annuels", "RTT", "Grossesse / maternité",
     "Formation", "Congés exceptionnels", "Temps partiel thérapeutique", "Autre"]);
   const shifts = ["J", "N", "T"];
+  const maxTiihMinutes=48*60;
   const dayMilliseconds = 86400000;
   const weekMinutes = 10080;
   const paris = new Intl.DateTimeFormat("en-GB", {timeZone: "Europe/Paris", hourCycle: "h23",
@@ -93,16 +98,26 @@
     return {schema_version: 2, revision: 0, nurses: Array.from({length:7},(_,i) => ({
       id: "ide-" + String.fromCharCode(97+i), name: "IDE " + String.fromCharCode(65+i),
       contracts: [{from: year + "-01-01", percent: 100}]
-    })), assignments: {}, phases: {}, reviewed: {}, absences: [], tiih_changes: {}, oat: {"2026":1560*60},
+    })), assignments: {}, phases: {}, reviewed: {}, absences: [], tiih_changes: {}, tiih_durations: {},
+    oat: {"2026":1560*60},
     settings: {timezone: "Europe/Paris", rest_clock: "wall", phase_min: 14, phase_target: 15,
       phase_max: 21, day_phase_min: 14, day_phase_target: 15, day_phase_max: 16,
-      rules_version: 2, rest_gap_mode: "prefer", extra_holidays: []}};
+      rules_version: 2, extra_holidays: []}};
   }
   function migrateState(input) {
     validateState(input);
     const state=JSON.parse(JSON.stringify(input));
+    if (!Object.hasOwn(state,"tiih_durations")) {
+      state.tiih_durations={};
+      // One previous version opened only Tuesdays and Fridays. A saved move
+      // to Thursday retains its slot when the native Thursday is introduced.
+      for (const [source,day] of Object.entries(state.tiih_changes)) {
+        if (day && day!==source && weekday(day)===3 && !Object.hasOwn(state.tiih_changes,day))
+          state.tiih_changes[day]=null;
+      }
+    }
     const settings=state.settings;
-    settings.rest_gap_mode="prefer";
+    delete settings.rest_gap_mode;
     if (settings.rules_version===2) return state;
     state.oat["2026"]=1560*60;
     settings.day_phase_min=settings.phase_min;
@@ -119,16 +134,101 @@
       return {min:settings.phase_min,target:settings.phase_target,max:settings.phase_max};
     return {min:settings.day_phase_min??14,target:settings.day_phase_target??15,max:settings.day_phase_max??16};
   }
-  function quotaOn(nurse, day) {
+  function isActive(nurse,day) {
+    return (!nurse.active_from || day>=nurse.active_from) && (!nurse.active_until || day<=nurse.active_until);
+  }
+  function baseQuotaOn(nurse, day) {
     let latest;
     for (const c of nurse.contracts) if (c.from <= day && (!latest || c.from > latest.from)) latest = c;
     return latest ? latest.percent : null;
+  }
+  function quotaOn(nurse,day) {
+    if (!isActive(nurse,day)) return 0;
+    const temporary=nurse.quota_periods?.find(p=>p.from<=day && day<=p.to);
+    return temporary ? temporary.percent : baseQuotaOn(nurse,day);
   }
   function setContract(nurse, day, percent) {
     serial(day);
     requireValue(percent === null || integer(percent, 1, 100), "Quotité attendue entre 1 et 100 %, ou vide.");
     nurse.contracts = nurse.contracts.filter(c => c.from !== day).concat({from: day, percent})
       .sort((a,b) => a.from.localeCompare(b.from));
+  }
+  function newId(prefix,items) {
+    const ids=new Set(items.map(item=>item.id));
+    let i=1;
+    while (ids.has(prefix+i)) i++;
+    return prefix+i;
+  }
+  function checkQuotaPeriod(period) {
+    requireValue(plain(period) && integer(period.percent,1,100),"La quotité temporaire doit être comprise entre 1 et 100 %.");
+    serial(period.from);
+    serial(period.to);
+    requireValue(period.from<=period.to,"La fin de la période doit suivre son début.");
+  }
+  function setQuotaPeriod(nurse,period) {
+    checkQuotaPeriod(period);
+    requireValue((!nurse.active_from || period.to>=nurse.active_from) &&
+      (!nurse.active_until || period.from<=nurse.active_until),"La période est entièrement hors des dates de présence de l’IDE.");
+    const periods=nurse.quota_periods??[];
+    requireValue(!period.id || periods.some(p=>p.id===period.id),"Cette période de quotité n’existe plus.");
+    const id=period.id||newId("periode-",periods);
+    requireValue(periods.every(p=>p.id===id || period.to<p.from || period.from>p.to),
+      "Cette période chevauche une autre quotité temporaire de l’IDE.");
+    nurse.quota_periods=[...periods.filter(p=>p.id!==id),{id,from:period.from,to:period.to,percent:period.percent}]
+      .sort((a,b)=>a.from.localeCompare(b.from));
+    return id;
+  }
+  function removeQuotaPeriod(nurse,id) {
+    const periods=nurse.quota_periods??[];
+    requireValue(periods.some(p=>p.id===id),"Cette période de quotité n’existe plus.");
+    nurse.quota_periods=periods.filter(p=>p.id!==id);
+  }
+  function addNurse(state,{name,from,percent}) {
+    serial(from);
+    const clean=typeof name==="string"?name.trim():"";
+    requireValue(clean,"Renseignez un nom pour l’IDE.");
+    requireValue(state.nurses.every(n=>n.name.trim().toLocaleLowerCase("fr")!==clean.toLocaleLowerCase("fr")),
+      "Une IDE porte déjà ce nom dans l’équipe.");
+    requireValue(integer(percent,1,100),"La quotité initiale doit être comprise entre 1 et 100 %.");
+    const id=newId("agent-",state.nurses);
+    state.nurses.push({id,name:clean,active_from:from,contracts:[{from,percent}]});
+    return id;
+  }
+  function nurseExitImpact(state,id,lastDay) {
+    const nurse=state.nurses.find(n=>n.id===id);
+    requireValue(nurse,"IDE introuvable.");
+    const impact={drafts:[],protected:[]};
+    if (lastDay===null) return impact;
+    serial(lastDay);
+    requireValue(!nurse.active_from || lastDay>=nurse.active_from,"Le dernier jour doit suivre ou égaler la date d’entrée.");
+    for (const day of Object.keys(state.assignments).sort()) {
+      const a=state.assignments[day][id];
+      if (day>lastDay && a && a.shift!=="-")
+        impact[a.confirmed || a.locked?"protected":"drafts"].push({day,shift:a.shift});
+    }
+    return impact;
+  }
+  function setNurseExit(state,id,lastDay) {
+    const impact=nurseExitImpact(state,id,lastDay);
+    requireValue(!impact.protected.length,"Un poste confirmé ou verrouillé est enregistré après la sortie"+
+      (impact.protected.length?" le "+impact.protected[0].day:"")+".");
+    const nurse=state.nurses.find(n=>n.id===id);
+    if (lastDay===null) {
+      delete nurse.active_until;
+      return impact;
+    }
+    nurse.active_until=lastDay;
+    for (const table of [state.assignments,state.phases]) for (const [day,row] of Object.entries(table)) {
+      if (day<=lastDay || !Object.hasOwn(row,id)) continue;
+      delete row[id];
+      if (!Object.keys(row).length) delete table[day];
+    }
+    for (const [day,reviewed] of Object.entries(state.reviewed)) if (day>lastDay && reviewed.includes(id)) {
+      const others=reviewed.filter(nid=>nid!==id);
+      if (others.length) state.reviewed[day]=others;
+      else delete state.reviewed[day];
+    }
+    return impact;
   }
 
   // Gregorian computus to locate the three national movable holidays.
@@ -150,11 +250,55 @@
     return holidaysByYear.get(y).has(day) || state.settings.extra_holidays.includes(day);
   }
   function defaultTiih(state, day) {
-    return [1,4].includes(weekday(day)) && !isHoliday(state,day);
+    return [1,3,4].includes(weekday(day)) && !isHoliday(state,day);
   }
-  function tiihRequired(state, day) {
-    if (Object.values(state.tiih_changes).includes(day)) return true;
-    return !Object.hasOwn(state.tiih_changes,day) && defaultTiih(state,day);
+  function tiihDay(state,source) {
+    if (Object.hasOwn(state.tiih_changes,source)) return state.tiih_changes[source];
+    return defaultTiih(state,source) ? source : null;
+  }
+  function tiihSource(state,day) {
+    for (const [source,destination] of Object.entries(state.tiih_changes))
+      if (destination===day) return source;
+    return tiihDay(state,day)===day ? day : null;
+  }
+  function tiihRequired(state,day) {
+    return tiihSource(state,day)!==null;
+  }
+  function getTiihDuration(state,source) {
+    const history=state.tiih_history_durations;
+    if (history) {
+      const day=tiihDay(state,source);
+      if (day && Object.hasOwn(history,day) && hasAssignedTiih(state,day)) return history[day];
+    }
+    return state.tiih_durations?.[source] ?? SHIFT_MINUTES.T;
+  }
+  function shiftMinutes(state,day,code) {
+    if (code!=="T" || !state) return SHIFT_MINUTES[code];
+    // Old attendance grids can include a TIIH outside the standard schedule.
+    const source=tiihSource(state,day);
+    if (source!==null) return getTiihDuration(state,source);
+    if (Object.hasOwn(state.tiih_history_durations??{},day)) return state.tiih_history_durations[day];
+    // An added holiday may close the native date of an existing assignment.
+    // When its source was moved elsewhere, that source's hours belong there.
+    return hasAssignedTiih(state,day) && !state.tiih_changes[day] ? getTiihDuration(state,day) : SHIFT_MINUTES.T;
+  }
+  function hasAssignedTiih(state,day) {
+    return Object.values(state.assignments[day]||{}).some(a=>a.shift==="T");
+  }
+  function hasProtectedTiih(state,day) {
+    return Object.values(state.assignments[day] || {}).some(a=>a.shift==="T" && (a.locked || a.confirmed));
+  }
+  function setTiihDuration(state,day,minutes) {
+    const source=tiihSource(state,day);
+    requireValue(source!==null,"Aucun TIIH n’est prévu à cette date.");
+    requireValue(integer(minutes,1,maxTiihMinutes),"La durée du TIIH doit être comprise entre 1 minute et 48 heures.");
+    if (minutes===getTiihDuration(state,source)) return;
+    requireValue(!hasProtectedTiih(state,day),"Le TIIH est verrouillé ou confirmé. Retirez sa protection avant de modifier sa durée.");
+    const overrides={...state.tiih_durations};
+    if (minutes===SHIFT_MINUTES.T) delete overrides[source];
+    else overrides[source]=minutes;
+    state.tiih_durations=overrides;
+    if (state.tiih_history_durations) delete state.tiih_history_durations[day];
   }
   function changeTiih(state, source, target = null, restore = false) {
     // Permit restoring a source suppressed before local holidays were edited.
@@ -162,6 +306,7 @@
       "Choisir une date d’origine prévue pour le TIIH.");
     const changes = {...state.tiih_changes};
     const previous = Object.hasOwn(changes,source) ? changes[source] : source;
+    const ownedPrevious=previous && tiihSource(state,previous)===source;
     delete changes[source];
     if (target === source) restore = true;
     const destination = restore ? source : target;
@@ -172,10 +317,19 @@
         (destination === source || Object.hasOwn(changes,destination) || !defaultTiih(state,destination)),
         "Un TIIH est déjà prévu à cette date.");
     }
-    if (previous !== destination && previous) {
+    if (destination && previous!==destination)
+      requireValue(!hasAssignedTiih(state,destination),
+        "Un TIIH est déjà affecté à la date de destination.");
+    if (previous !== destination && ownedPrevious) {
       const row = state.assignments[previous] || {};
-      requireValue(!Object.values(row).some(a => a.shift === "T" && (a.confirmed || a.locked)),
+      requireValue(!hasProtectedTiih(state,previous),
         "Déverrouillez le poste TIIH ou corrigez son état confirmé avant de le déplacer ou de le supprimer.");
+      // A historical off-calendar TIIH can become a regular date after a
+      // holiday edit. Its stored duration must now follow the active source.
+      if (Object.hasOwn(state.tiih_history_durations??{},previous) && hasAssignedTiih(state,previous)) {
+        (state.tiih_durations??={})[source]=state.tiih_history_durations[previous];
+        delete state.tiih_history_durations[previous];
+      }
       if (Object.values(row).some(a => a.shift === "T")) {
         state.assignments[previous] = Object.fromEntries(Object.entries(row).filter(([,a]) => a.shift !== "T"));
       }
@@ -189,7 +343,7 @@
     const day = [parts.year, parts.month, parts.day].join("-");
     return {day, minute: Number(parts.hour)*60+Number(parts.minute)};
   }
-  function localEpoch(day, minute) {
+  function localEpoch(day, minute, advanceMissing=false) {
     const wall = serial(day)*1440 + minute;
     // Try offsets on both sides of a transition (and verify the local clock).
     // In the repeated autumn hour pick the earlier occurrence.
@@ -199,24 +353,42 @@
       offsets.add(serial(actual.day)*1440+actual.minute-t);
     }
     const candidates = [...offsets].map(o => wall-o).sort((a,b) => a-b);
+    let following;
     for (const epoch of candidates) {
       const actual = localParts(epoch);
       if (actual.day === day && actual.minute === minute) return epoch;
+      if (actual.day===day && actual.minute>minute) following=epoch;
     }
+    if (advanceMissing && following!==undefined) return following;
     throw new Error("Cet horaire local n’existe pas au changement d’heure.");
   }
-  function shiftInterval(day, shift, clock = "elapsed") {
-    const key = [day,shift,clock].join("/");
+  function shiftInterval(day, shift, clock = "elapsed", state = null) {
+    const duration=shiftMinutes(state,day,shift);
+    const key = [day,shift,clock,duration].join("/");
     if (shiftCache.has(key)) return shiftCache.get(key);
     requireValue(shifts.includes(shift), "Type de poste inconnu.");
     const start = shift === "J" ? 480 : shift === "T" ? 540 : 1200;
-    const end = shift === "J" ? 1200 : shift === "T" ? 1002 : 480;
-    const last = shift === "N" ? addDays(day,1) : day;
-    const minuteAt = clock === "wall" ? (d,m) => serial(d)*1440+m : localEpoch;
-    const result = Object.freeze([minuteAt(day,start), minuteAt(last,end)]);
+    const end = start+duration;
+    const last = addDays(day,Math.floor(end/1440));
+    let result;
+    if (clock==="wall") {
+      const finish=shift==="T"?tiihWallEnd(day,duration):serial(day)*1440+end;
+      result=Object.freeze([serial(day)*1440+start,finish]);
+    } else {
+      result=Object.freeze([localEpoch(day,start),localEpoch(last,end%1440,shift==="T")]);
+    }
     if (shiftCache.size > 20000) shiftCache.clear();
     shiftCache.set(key,result);
     return result;
+  }
+  function tiihWallEnd(day,minutes) {
+    requireValue(integer(minutes,1,maxTiihMinutes),"La durée du TIIH doit être comprise entre 1 minute et 48 heures.");
+    const end=540+minutes;
+    if (Math.floor((end%1440)/60)!==2) return serial(day)*1440+end;
+    // A nominal end in the spring-forward gap is displayed one hour later.
+    const last=addDays(day,Math.floor(end/1440));
+    const parts=localParts(localEpoch(last,end%1440,true));
+    return serial(parts.day)*1440+parts.minute;
   }
   function calendarWeekBounds(day) {
     const monday=addDays(day,-weekday(day));
@@ -242,7 +414,15 @@
     return state.absences.some(x => x.nurse_id === nid && overlap(a,b,moment(x.start),moment(x.end)));
   }
   function absentFor(state,nid,day,shift) {
-    return absentBetween(state,nid,...shiftInterval(day,shift));
+    if (!state.absences.some(a=>a.nurse_id===nid)) return false;
+    const nurse=state.nurses.find(n=>n.id===nid);
+    if (!nurse || !isActive(nurse,day)) return false;
+    const [begin,end]=shiftInterval(day,shift,"elapsed",state);
+    // A duty may start on the last active date and finish after exit. Absence
+    // records retained exclusively beyond employment cannot invalidate it.
+    const finish=nurse.active_until && day>=addDays(nurse.active_until,-2)
+      ? Math.min(end,localEpoch(addDays(nurse.active_until,1),0)):end;
+    return absentBetween(state,nid,begin,finish);
   }
   function absenceOn(state,nid,day) {
     if (!state.absences.some(x => x.nurse_id === nid)) return false;
@@ -278,8 +458,10 @@
     return id;
   }
   function creditMinutes(state,nid,start,end) {
+    const nurse=state.nurses.find(n=>n.id===nid);
+    if (!nurse) return 0;
     return state.absences.filter(a=>a.nurse_id===nid).reduce((sum,a)=>sum+
-      Object.entries(a.credits).reduce((total,[d,v])=>total+(d>=start&&d<=end?v:0),0),0);
+      Object.entries(a.credits).reduce((total,[d,v])=>total+(d>=start&&d<=end&&isActive(nurse,d)?v:0),0),0);
   }
   function validateState(state) {
     requireValue(plain(state) && state.schema_version===2 && integer(state.revision,0,Number.MAX_SAFE_INTEGER),
@@ -287,13 +469,37 @@
     for (const key of ["assignments","phases","reviewed","oat","tiih_changes","settings"]) {
       requireValue(plain(state[key]),"Rubrique de sauvegarde invalide : "+key);
     }
-    requireValue(Array.isArray(state.nurses) && state.nurses.length>0 && Array.isArray(state.absences),
+    for (const key of ["tiih_durations","tiih_history_durations"]) {
+      if (!Object.hasOwn(state,key)) continue;
+      requireValue(plain(state[key]),"Durées TIIH invalides dans la sauvegarde.");
+      for (const [day,minutes] of Object.entries(state[key])) {
+        serial(day);
+        requireValue(integer(minutes,1,maxTiihMinutes),"Durée TIIH invalide le "+day+" (1 minute à 48 heures).");
+      }
+    }
+    requireValue(Array.isArray(state.nurses) && Array.isArray(state.absences),
       "Équipe ou absences invalides.");
     const ids=new Set();
     for (const nurse of state.nurses) {
       requireValue(plain(nurse) && validId(nurse.id) && !ids.has(nurse.id) && typeof nurse.name==="string" &&
         nurse.name.trim() && Array.isArray(nurse.contracts) && nurse.contracts.length>0,"Identité ou contrat IDE invalide.");
       ids.add(nurse.id);
+      if (nurse.active_from!=null) serial(nurse.active_from);
+      if (nurse.active_until!=null) serial(nurse.active_until);
+      requireValue(!nurse.active_from || !nurse.active_until || nurse.active_from<=nurse.active_until,
+        "La sortie d’une IDE précède son entrée.");
+      const periods=nurse.quota_periods??[];
+      requireValue(Array.isArray(periods),"Périodes de quotité invalides.");
+      const ordered=[...periods];
+      const periodIds=new Set();
+      for (const p of ordered) {
+        checkQuotaPeriod(p);
+        requireValue(validId(p.id) && !periodIds.has(p.id),"Identifiant de période de quotité invalide ou en double.");
+        periodIds.add(p.id);
+      }
+      ordered.sort((a,b)=>a.from.localeCompare(b.from));
+      for (let i=1;i<ordered.length;i++) requireValue(ordered[i].from>ordered[i-1].to,
+        "Deux périodes de quotité se chevauchent pour la même IDE.");
       const seen=new Set();
       for (const c of nurse.contracts) {
         requireValue(plain(c) && !seen.has(c.from) && (c.percent===null||integer(c.percent,1,100)),
@@ -308,7 +514,6 @@
     requireValue(s.timezone==="Europe/Paris" && [null,"wall","elapsed"].includes(s.rest_clock) &&
       integer(s.phase_min,2,60) && integer(s.phase_target,s.phase_min,60) &&
       integer(s.phase_max,s.phase_target,60) && Array.isArray(s.extra_holidays),"Paramètres de planification invalides.");
-    requireValue([undefined,"strict","prefer"].includes(s.rest_gap_mode),"Mode de gestion des repos invalide.");
     if (s.rules_version===2) requireValue(s.phase_min>=14 && s.phase_max<=21,
       "Les périodes de nuit doivent rester comprises entre 14 et 21 jours.");
     const dayPhase=phaseBounds(s,"J");
@@ -364,10 +569,10 @@
       let planned=0,confirmed=0,conflicts=0;
       for (const [d,row] of Object.entries(state.assignments)) {
         const a=row[n.id];
-        if (d<first || d>last || !a || a.shift==="-") continue;
+        if (d<first || d>last || !a || a.shift==="-" || !isActive(n,d)) continue;
         if (absentFor(state,n.id,d,a.shift)) conflicts++;
-        else if (a.confirmed) confirmed+=SHIFT_MINUTES[a.shift];
-        else planned+=SHIFT_MINUTES[a.shift];
+        else if (a.confirmed) confirmed+=shiftMinutes(state,d,a.shift);
+        else planned+=shiftMinutes(state,d,a.shift);
       }
       const absent=creditMinutes(state,n.id,first,last), rates=calendar.map(d=>quotaOn(n,d));
       let target=null;
@@ -382,47 +587,25 @@
       return {nurse_id:n.id,name:n.name,planned_minutes:planned,confirmed_minutes:confirmed,
         absence_minutes:absent,total_minutes:total,target_minutes:target,
         remaining_minutes:total===null || target===null ? null : target-total, conflicts,
-        reviewed_days:calendar.filter(d=>state.reviewed[d]?.includes(n.id)).length};
+        reviewed_days:calendar.filter(d=>isActive(n,d) && state.reviewed[d]?.includes(n.id)).length};
     });
-  }
-  // Only count a run bounded by an actual duty at each end. A missing day
-  // or an absence interrupts the evidence for a run of rostered rest days.
-  function restGaps(state,nid,start,end) {
-    const ordered=Object.keys(state.assignments).filter(d=>{
-      const a=state.assignments[d]?.[nid];
-      return a && a.shift!=="-";
-    }).sort();
-    const gaps=[];
-    for (let i=1;i<ordered.length;i++) {
-      const before=ordered[i-1],after=ordered[i];
-      const days=serial(after)-serial(before)-1;
-      if (days<=2 || after<start || before>end) continue;
-      const first=addDays(before,1),last=addDays(after,-1);
-      let known=true;
-      for (let d=first;d<=last;d=addDays(d,1)) {
-        if ((!Object.hasOwn(state.assignments[d]||{},nid) && !state.reviewed[d]?.includes(nid)) ||
-            absenceOn(state,nid,d)) { known=false; break; }
-      }
-      if (known) gaps.push({start:first,end:last,days});
-    }
-    return gaps;
   }
   function validateSchedule(state,start,end,coverage=true) {
     const issues=[];
     function issue(code,message,day=null,nid=null,severity="error") {
       issues.push({code,message,severity,day,nurse_id:nid});
     }
-    const monthDays=dates(start,end), contextDays=dates(addDays(start,-8),addDays(end,8));
+    requireValue(start<=end,"La fin du planning doit suivre son début.");
+    const margin=10; // 168-hour window plus a TIIH of up to 48 hours and the DST transition.
+    const monthDays=dates(start,end), contextDays=dates(addDays(start,-margin),addDays(end,margin));
     const scopeStart=localEpoch(start,0),scopeEnd=localEpoch(addDays(end,1),0);
     const weekStarts=[...new Set(monthDays.map(d=>addDays(d,-weekday(d))))];
-    // A Sunday night can also increase the following week's work. Include its
-    // Monday even when the selected range ends on Sunday evening.
-    if (weekday(end)===6 && Object.values(state.assignments[end]||{}).some(a=>a.shift==="N"))
-      weekStarts.push(addDays(end,1));
     const weeks=weekStarts.map(d=>({date:d,interval:calendarWeekBounds(d)}));
-    const prior=dates(addDays(start,-8),addDays(start,-1)),following=dates(addDays(end,1),addDays(end,8));
+    const nextMonday=addDays(weekStarts.at(-1),7);
+    const followingWeek={date:nextMonday,interval:calendarWeekBounds(nextMonday)};
+    const prior=dates(addDays(start,-margin),addDays(start,-1)),following=dates(addDays(end,1),addDays(end,margin));
     for (const [range,code,title] of [[prior,"history","Historique précédent"],[following,"future","Mois suivant"]]) {
-      if (range.some(d=>state.nurses.some(n=>!state.reviewed[d]?.includes(n.id))))
+      if (range.some(d=>state.nurses.some(n=>isActive(n,d) && !state.reviewed[d]?.includes(n.id))))
         issue(code,title+" incomplet. Le contrôle des limites reste provisoire.",null,null,"warning");
     }
     if (!state.settings.rest_clock)
@@ -430,7 +613,7 @@
     if (state.nurses.some(n=>monthDays.some(d=>quotaOn(n,d)===null)))
       issue("quota","Certaines quotités doivent être renseignées.",null,null,"warning");
     if (coverage) for (const d of monthDays) {
-      const assigned=Object.values(state.assignments[d]||{});
+      const assigned=state.nurses.filter(n=>isActive(n,d)).map(n=>state.assignments[d]?.[n.id]).filter(Boolean);
       for (const code of shifts) {
         const need=code!=="T" || tiihRequired(state,d) ? 1 : 0;
         const count=assigned.filter(a=>a.shift===code).length;
@@ -439,13 +622,18 @@
     }
     for (const to of Object.values(state.tiih_changes))
       if (to && to>=start && to<=end && isHoliday(state,to)) issue("holiday","TIIH déplacé sur un jour férié.",to);
-    for (const {id:nid,name} of state.nurses) {
+    for (const nurse of state.nurses) {
+      const {id:nid,name}=nurse;
       const work=[],byDay=new Map();
       const report=(code,detail,d) => issue(code,name+" · "+detail,d,nid);
       for (const d of contextDays) {
         const a=state.assignments[d]?.[nid];
         if (a && a.shift!=="-") {
-          const [begin,finish]=shiftInterval(d,a.shift);
+          if (!isActive(nurse,d)) {
+            if (d>=start && d<=end) report("inactive","poste du "+d+" en dehors des dates de présence.",d);
+            continue;
+          }
+          const [begin,finish]=shiftInterval(d,a.shift,"elapsed",state);
           work.push({d,shift:a.shift,begin,finish});
           byDay.set(d,a.shift);
           // Include a previous night's overlap with an absence beginning in the new month.
@@ -453,32 +641,45 @@
             report("absence","poste du "+d+" pendant une absence.",d);
         }
       }
-      for (let i=1;i<work.length && state.settings.rest_clock;i++) {
-        const prev=work[i-1],next=work[i];
-        if (prev.d>end || next.d<start || (prev.d<start && next.d>end)) continue;
-        const clock=state.settings.rest_clock;
-        const rest=shiftInterval(next.d,next.shift,clock)[0]-shiftInterval(prev.d,prev.shift,clock)[1];
-        if (rest<720) report("rest","repos de "+formatMinutes(rest)+" entre le "+prev.d+" et le "+next.d+".",next.d);
+      let impactedEnd=scopeEnd;
+      for (const w of work) if (w.d>=start && w.d<=end) impactedEnd=Math.max(impactedEnd,w.finish);
+      for (let i=1;i<work.length;i++) {
+        const next=work[i],clock=state.settings.rest_clock;
+        // A long assignment can overlap more than one subsequent shift.
+        for (let j=i-1;j>=0 && serial(next.d)-serial(work[j].d)<=3;j--) {
+          const prev=work[j];
+          if (prev.begin>=scopeEnd || next.finish<=scopeStart || (prev.finish<=scopeStart && next.begin>=scopeEnd)) continue;
+          if (!clock && next.begin>=prev.finish) continue;
+          const rest=clock?shiftInterval(next.d,next.shift,clock,state)[0]-shiftInterval(prev.d,prev.shift,clock,state)[1]:
+            next.begin-prev.finish;
+          if (rest<0) report("rest","postes du "+prev.d+" et du "+next.d+" en chevauchement.",next.d);
+          else if (rest<720 && clock) report("rest","repos de "+formatMinutes(rest)+" entre le "+prev.d+" et le "+next.d+".",next.d);
+        }
       }
-      for (const d of dates(addDays(start,-3),end)) {
-        if ([0,1,2,3].every(offset=>byDay.has(addDays(d,offset))))
-          report("consecutive","quatre prises de poste consécutives à partir du "+d+".",d);
+      const recoveryIssues=new Set();
+      for (const first of dates(addDays(start,-4),end)) {
+        const third=addDays(first,2);
+        if (![first,addDays(first,1),third].every(d=>byDay.has(d))) continue;
+        for (const offset of [3,4]) {
+          const d=addDays(first,offset);
+          if (d<start || (third<start && d>end) || !byDay.has(d) || recoveryIssues.has(d)) continue;
+          recoveryIssues.add(d);
+          report("recovery_after_three","poste du "+d+" pendant les deux jours de repos obligatoires après la série du "+
+            first+" au "+third+".",d);
+        }
       }
-      for (const {date,interval:[a,b]} of weeks) {
+      const impactedWeeks=impactedEnd>followingWeek.interval[0]?[...weeks,followingWeek]:weeks;
+      for (const {date,interval:[a,b]} of impactedWeeks) {
         const total=work.reduce((sum,w)=>sum+Math.max(0,Math.min(b,w.finish)-Math.max(a,w.begin)),0);
         if (total>44*60) report("calendar_week",formatMinutes(total)+" du lundi "+date+
           " au dimanche "+addDays(date,6)+" (maximum 44 h).",date);
-      }
-      for (const gap of restGaps(state,nid,start,end)) {
-        issue("rest_gap",name+" · "+gap.days+" jours de repos entre deux séries du "+
-          gap.start+" au "+gap.end+" (objectif : deux jours au plus).",gap.start,nid,"warning");
       }
       const boundaries=new Set();
       for (const {begin,finish} of work)
         for (const t of [begin,finish,begin-weekMinutes,finish-weekMinutes]) boundaries.add(t);
       let worst=0,when=null;
       for (const t of boundaries) {
-        if (!overlap(t,t+weekMinutes,scopeStart,scopeEnd)) continue;
+        if (!overlap(t,t+weekMinutes,scopeStart,impactedEnd)) continue;
         const total=work.reduce((sum,w)=>sum+Math.max(0,Math.min(t+weekMinutes,w.finish)-Math.max(t,w.begin)),0);
         if (total>worst) { worst=total; when=t; }
       }
@@ -503,8 +704,10 @@
       let missing=false;
       // An edited phase can also invalidate the first saved phase after the displayed month.
       for (const d of [...monthDays,addDays(end,1)]) {
-        const p=state.phases[d]?.[nid], prev=state.phases[addDays(d,-1)]?.[nid];
-        if (d<=end && (!p || !prev)) missing=true;
+        if (!isActive(nurse,d)) continue;
+        const previousDay=addDays(d,-1),wasActive=isActive(nurse,previousDay);
+        const p=state.phases[d]?.[nid], prev=wasActive?state.phases[previousDay]?.[nid]:null;
+        if (d<=end && (!p || (wasActive && !prev))) missing=true;
         if (!p) continue;
         const shift=byDay.get(d);
         if (d<=end && (p.age>phaseBounds(state.settings,p.mode).max || (shift && (shift==="N")!==(p.mode==="N"))))
@@ -529,10 +732,18 @@
     if (value==="T" || value.includes("TIIH") || value.includes("🛠")) return "T";
     throw new Error("Poste non reconnu dans "+file+", jour "+day+" : "+label);
   }
+  function legacyTiihMinutes(label,file,day) {
+    if (!/[\d:()]/.test(label)) return null;
+    const match=/^TIIH\s+(?:\((\d{1,2}:[0-5]\d)\)|(\d{1,2}:[0-5]\d))$/i.exec(label.trim());
+    requireValue(match,"Durée de TIIH invalide dans "+file+" le "+day+".");
+    const minutes=parseDuration(match[1]??match[2]);
+    requireValue(integer(minutes,1,maxTiihMinutes),"Durée de TIIH hors limites dans "+file+" le "+day+".");
+    return minutes;
+  }
   function importLegacyFiles(state,files) {
     validateState(state);
     requireValue(Array.isArray(files)&&files.length,"Sélectionnez au moins un fichier planning_AAAA_MM.json.");
-    const records=[],names=new Set(),warnings=[];
+    const records=[],names=new Set(),warnings=[],durations=new Map();
     for (const file of files) {
       const match=/^planning_(\d{4})_(\d{2})\.json$/i.exec(file.name);
       requireValue(match,"Nom de fichier attendu : planning_AAAA_MM.json. Fichier reçu : "+file.name);
@@ -551,13 +762,32 @@
             "Jour invalide ou en double dans "+file.name+" : "+day);
           daysSeen.add(Number(day));
           const date=first.slice(0,8)+String(Number(day)).padStart(2,"0");
-          records.push({name,date,shift:legacyShift(label,file.name,day)});
+          const shift=legacyShift(label,file.name,day);
+          if (shift==="T") {
+            const minutes=legacyTiihMinutes(label,file.name,date);
+            if (minutes!==null) {
+              requireValue(!durations.has(date)||durations.get(date)===minutes,
+                "Durées de TIIH contradictoires le "+date+".");
+              durations.set(date,minutes);
+            }
+          }
+          records.push({name,date,shift});
         }
         if (daysSeen.size!==monthLength) warnings.push(file.name+" · "+name+" : historique du mois incomplet.");
       }
     }
     requireValue(records.length,"Aucune affectation ou journée de repos reconnue.");
     const candidate=JSON.parse(JSON.stringify(state));
+    for (const [day,minutes] of durations) {
+      const source=tiihSource(candidate,day);
+      const key=source===null?"tiih_history_durations":"tiih_durations";
+      const date=source??day;
+      const existing=Object.hasOwn(candidate[key]??{},date) ||
+        Object.values(candidate.assignments[day]??{}).some(a=>a.shift==="T");
+      requireValue(!existing || shiftMinutes(candidate,day,"T")===minutes,
+        "La durée du TIIH importé diffère de la durée enregistrée le "+day+".");
+      (candidate[key]??={})[date]=minutes;
+    }
     // Only remove unused defaults from an untouched roster. Keep configured
     // contracts, periods and staff records, and reuse matching display names.
     const newDefaults=candidate.nurses.every(n=>n.contracts[0]?.percent===100);
@@ -565,9 +795,9 @@
     const untouched=candidate.nurses.length===defaults.length && !candidate.absences.length &&
       ["assignments","reviewed","phases"].every(k=>!Object.keys(candidate[k]).length) &&
       candidate.nurses.every((n,i)=>n.id==="ide-"+String.fromCharCode(97+i) &&
-        n.name==="IDE "+String.fromCharCode(65+i) && n.contracts.length===1 &&
+        n.name==="IDE "+String.fromCharCode(65+i) && !n.active_from && !n.active_until && !n.quota_periods?.length && n.contracts.length===1 &&
         n.contracts[0].percent===defaults[i] && n.contracts[0].from.endsWith("-01-01"));
-    const defaultFrom=candidate.nurses[0].contracts[0].from;
+    const defaultFrom=candidate.nurses[0]?.contracts[0]?.from;
     const reuseDefaultContract=untouched && newDefaults && candidate.nurses.every(n=>n.contracts[0].from===defaultFrom);
     let replacedCount=0;
     if (untouched) {
@@ -612,7 +842,9 @@
   globalThis.PlannerDomain=Object.freeze({SHIFT_MINUTES,SHIFT_LABELS,ABSENCE_KINDS,dates,addDays,weekday,
     monthBounds,formatMinutes,parseDuration,newState,quotaOn,setContract,isHoliday,defaultTiih,tiihRequired,
     changeTiih,shiftInterval,absentFor,absenceOn,setAbsence,creditMinutes,validateState,annualTotals,validateSchedule,
-    importLegacyFiles,calendarWeekBounds,restGaps,migrateState,phaseBounds});
+    importLegacyFiles,calendarWeekBounds,migrateState,phaseBounds,tiihSource,tiihDay,
+    getTiihDuration,setTiihDuration,shiftMinutes,tiihWallEnd,isActive,activeOn:isActive,baseQuotaOn,
+    setQuotaPeriod,removeQuotaPeriod,addNurse,nurseExitImpact,setNurseExit});
 })();
 
 </script>
@@ -621,7 +853,9 @@
 (() => {
   "use strict";
   const shifts = ["N", "J", "T"];
-  const priorDays = 8;
+  // A duty can start two dates before it finishes. Include both tails of every
+  // 168-hour window, with one more civil day for clock changes.
+  const priorDays = 10;
   const weeklyMinutes = 7 * 24 * 60;
   const workLimit = 48 * 60;
   const now = () => performance.now();
@@ -636,7 +870,65 @@
     };
   }
 
-  function prepare(state, year, month, D) {
+  // Each observed past duty contributes a fair share only to the people on
+  // the roster that day. An arrival therefore starts with no inherited debt.
+  // The next month accumulates its target at the rate effective on each date.
+  function setWorkTargets(state,D,ctx) {
+    const {nurses,days,start,endIndex,monthEnd,needed,shiftMinutes}=ctx;
+    const years=new Set(days.slice(priorDays,endIndex+1).map(day=>day.slice(0,4)));
+    const credits=new Map();
+    const people=new Map(nurses.map(n=>[n.id,n.person]));
+    for (const a of state.absences) for (const [day,minutes] of Object.entries(a.credits))
+      if (D.isActive(people.get(a.nurse_id),day)) credits.set(day,(credits.get(day)||0)+minutes);
+    const history=new Set([...Object.keys(state.assignments),...credits.keys()].filter(day=>day<start));
+    for (const n of nurses) {
+      n.workTargets={};
+      n.targetAt=[];
+      n.expectedCount=[];
+      n.countTarget=0;
+    }
+    for (const day of history) {
+      const year=day.slice(0,4), row=state.assignments[day] || {};
+      let minutes=credits.get(day)||0;
+      const count={J:0,N:0};
+      const weights=nurses.map(n=>{
+        if (!D.isActive(n.person,day)) return 0;
+        // If a legacy month predates all known rates, use a full-time weight
+        // for that historic calculation only.
+        return D.quotaOn(n.person,day) ?? 100;
+      });
+      const weight=weights.reduce((sum,q)=>sum+q,0);
+      if (!weight) continue;
+      for (const n of nurses) {
+        const shift=row[n.id]?.shift;
+        if (!shift || shift==="-" || !D.isActive(n.person,day) || D.absentFor(state,n.id,day,shift)) continue;
+        if (shift!=="T") {
+          count[shift]++;
+          n.historicalShifts[shift]++;
+        }
+        minutes+=D.shiftMinutes(state,day,shift);
+      }
+      nurses.forEach((n,j)=>{
+        const share=weights[j]/weight;
+        for (const code of ["J","N"]) n.historicalShifts[code]-=count[code]*share;
+        if (years.has(year)) n.workTargets[year]=(n.workTargets[year]||0)+minutes*share;
+      });
+    }
+    for (let i=priorDays; i<=endIndex; i++) {
+      const day=days[i],year=day.slice(0,4);
+      const work=shiftMinutes[i].J+shiftMinutes[i].N+(needed[i]?shiftMinutes[i].T:0)+(credits.get(day)||0);
+      const weight=nurses.reduce((sum,n)=>sum+n.quotas[i],0);
+      for (const n of nurses) {
+        const share=weight?n.quotas[i]/weight:0;
+        n.workTargets[year]=(n.workTargets[year]||0)+work*share;
+        n.targetAt[i]=n.workTargets[year];
+        if (i<=monthEnd) n.countTarget+=share;
+        n.expectedCount[i]=n.countTarget;
+      }
+    }
+  }
+
+  function prepare(state, year, month, D, reopen=new Set()) {
     D.validateState(state);
     if (!Number.isInteger(year) || year < 1900 || year > 2200 ||
         !Number.isInteger(month) || month < 1 || month > 12)
@@ -647,60 +939,103 @@
     if ([4, 5].includes(D.weekday(horizon))) horizon = D.addDays(horizon, 6-D.weekday(horizon));
     const days = D.dates(D.addDays(start, -priorDays), D.addDays(horizon, priorDays));
     const endIndex = days.indexOf(horizon);
+    const monthEnd=days.indexOf(end);
+    for (const day of days.slice(priorDays,endIndex+1)) {
+      const active=state.nurses.filter(n=>D.isActive(n,day)).length;
+      if (!active) return {impossible:"Aucune IDE dans l’effectif le "+day+" pour couvrir les deux postes SMUR obligatoires."};
+      const required=D.tiihRequired(state,day)?3:2;
+      if (active<required) return {impossible:"Effectif insuffisant le "+day+" : "+active+" IDE pour "+required+" postes."};
+    }
     const shiftIntervals = days.map(day => Object.fromEntries(shifts.map(shift => [
-      shift, D.shiftInterval(day, shift)
+      shift, D.shiftInterval(day, shift, "elapsed", state)
     ])));
     const restIntervals = state.settings.rest_clock === "elapsed" ? shiftIntervals :
-      days.map(day => Object.fromEntries(shifts.map(shift => [shift, D.shiftInterval(day, shift, "wall")])));
+      days.map(day => Object.fromEntries(shifts.map(shift => [shift, D.shiftInterval(day, shift, "wall", state)])));
+    const shiftMinutes = days.map(day => Object.fromEntries(shifts.map(shift => [
+      shift, D.shiftMinutes(state, day, shift)
+    ])));
     const weekdays = days.map(day => D.weekday(day));
     const calendarWeeks = days.map(D.calendarWeekBounds);
     const needed = days.map(day => D.tiihRequired(state, day));
     const nurses = state.nurses.map(nurse => {
       const work = Array(days.length).fill(null);
-      const editable = [], oldPhase = [], available = [], averagedQuotas = {}, initialLoads = {};
+      const editable = [], oldPhase = [], available = [], initialLoads = {};
+      const active=days.map(day=>D.isActive(nurse,day));
+      const quotas=days.map((day,i)=>active[i]?D.quotaOn(nurse,day):0);
+      if (quotas.slice(priorDays,endIndex+1).some(q => q == null))
+        throw Error("Renseigner les quotités pour le mois et son anticipation.");
       const years = [...new Set(days.slice(priorDays, endIndex + 1).map(day => day.slice(0, 4)))];
       for (const y of years) {
-        const active = days.slice(priorDays, endIndex + 1).filter(d => d.startsWith(y));
-        const quotas = active.map(d => D.quotaOn(nurse, d));
-        if (quotas.some(q => q == null)) throw Error("Renseigner les quotités pour le mois et son anticipation.");
-        averagedQuotas[y] = quotas.reduce((a,b) => a+b, 0) / quotas.length;
-        const credits = D.creditMinutes(state, nurse.id, y+"-01-01", active.at(-1));
+        const period = days.slice(priorDays, endIndex + 1).filter(d => d.startsWith(y));
+        const credits = D.creditMinutes(state, nurse.id, y+"-01-01", period.at(-1));
         initialLoads[y] = credits;
         for (const [day, assignments] of Object.entries(state.assignments)) {
           const shift = assignments[nurse.id]?.shift;
-          if (shift && shift !== "-" && day.startsWith(y) && day < active[0] &&
+          if (shift && shift !== "-" && day.startsWith(y) && day < period[0] && D.isActive(nurse,day) &&
               !D.absentFor(state, nurse.id, day, shift))
-            initialLoads[y] += D.SHIFT_MINUTES[shift];
+            initialLoads[y] += D.shiftMinutes(state, day, shift);
         }
       }
       const historicalShifts = {J:0, N:0};
-      for (const [day, team] of Object.entries(state.assignments)) {
-        const shift = team[nurse.id]?.shift;
-        if (day < start && (shift === "J" || shift === "N") && !D.absentFor(state,nurse.id,day,shift))
-          historicalShifts[shift]++;
-      }
-      const known = [], away = [];
+      const known = [];
       days.forEach((day, i) => {
         const old = state.assignments[day]?.[nurse.id];
         const reviewed = state.reviewed[day]?.includes(nurse.id);
-        editable[i] = day >= start && day <= horizon && !old?.locked && !old?.confirmed &&
-          (day <= end || (!reviewed && !old));
-        known[i] = editable[i] || reviewed || Boolean(old);
-        away[i] = D.absenceOn(state,nurse.id,day);
+        editable[i] = active[i] && day >= start && day <= horizon && !old?.locked && !old?.confirmed &&
+          (day <= end || reopen.has(i) || (!reviewed && !old));
+        known[i] = active[i] && (editable[i] || reviewed || Boolean(old));
         const phase = state.phases[day]?.[nurse.id];
-        oldPhase[i] = phase && (day < start || day > end || phase.locked)
+        oldPhase[i] = active[i] && phase && (day < start || (day > end && !reopen.has(i)) || phase.locked)
           ? (phase.mode === "N" ? phase.age : -phase.age) : null;
         if (!editable[i] && old?.shift && old.shift !== "-") {
           work[i] = old.shift;
-          if (day >= start && day <= horizon) initialLoads[day.slice(0,4)] += D.SHIFT_MINUTES[old.shift];
+          if (day >= start && day <= horizon) initialLoads[day.slice(0,4)] += shiftMinutes[i][old.shift];
         }
-        available[i] = Object.fromEntries(shifts.map(code => [code, !D.absentFor(state,nurse.id,day,code)]));
+        available[i] = Object.fromEntries(shifts.map(code => [code, active[i] && !D.absentFor(state,nurse.id,day,code)]));
       });
-      return {id:nurse.id, work, editable, known, away, oldPhase, available, averagedQuotas, initialLoads, historicalShifts};
+      return {id:nurse.id, person:nurse, active, quotas, work, editable, known, oldPhase, available, initialLoads, historicalShifts};
     });
+    // First try to repair vacancies in a saved forecast without disturbing
+    // other work. If this fails, only the surrounding forecast week may reopen.
+    const timing = {shiftIntervals, restIntervals, calendarWeeks, weekdays};
+    const repairDates=new Set();
+    for (let i=monthEnd+1; i<=endIndex; i++) {
+      const day=days[i], row=state.assignments[day] || {};
+      if (!Object.keys(row).length || reopen.has(i)) continue;
+      const missing=shifts.some(code=>(code!=="T" || needed[i]) && !nurses.some(n=>n.work[i]===code));
+      const incompatible=nurses.filter(n=>n.work[i] && (!n.available[i][n.work[i]] || !legalDay(timing,n,i)));
+      if (!missing && !incompatible.length) continue;
+      for (let j=Math.max(i-7,monthEnd+1); j<=Math.min(i+7,endIndex); j++) repairDates.add(j);
+      for (const n of incompatible) {
+        if (n.work[i]!=="T" || !n.active[i] || row[n.id].locked || row[n.id].confirmed) continue;
+        n.initialLoads[day.slice(0,4)]-=shiftMinutes[i][n.work[i]];
+        n.work[i]=null;
+        n.editable[i]=true;
+      }
+      for (const n of nurses) {
+        const entry=row[n.id];
+        if (n.active[i] && entry?.shift==="-" && !entry.locked && !entry.confirmed) n.editable[i]=true;
+      }
+    }
     const tasks = [];
     let impossible = null;
+    for (const n of nurses) {
+      for (let first=priorDays-4; first<=endIndex; first++) {
+        if (n.work[first] && n.work[first+1] && n.work[first+2] &&
+            [first+3,first+4].some(j=>j>=priorDays && n.work[j]))
+          return {repairDates,impossible:n.person.name+" : deux jours de repos obligatoires après les trois prises de poste du "+
+            days[first]+" au "+days[first+2]+". Une affectation enregistrée empêche ce repos."};
+      }
+    }
     for (let i=priorDays; i<=endIndex; i++) {
+      if (needed[i]) {
+        const [begin,finish]=shiftIntervals[i].T;
+        const monday=calendarWeeks[i][1];
+        if (finish-begin>workLimit)
+          return {impossible:"La durée réelle du TIIH du "+days[i]+" dépasse à elle seule le plafond de 48 h sur 168 h."};
+        if (Math.max(Math.min(monday,finish)-begin,finish-monday)>44*60)
+          return {impossible:"Le TIIH du "+days[i]+" dépasse à lui seul 44 h dans une semaine du lundi au dimanche."};
+      }
       for (const code of shifts) {
         const need = code !== "T" || needed[i];
         const owners = nurses.filter(n => n.work[i] === code);
@@ -731,7 +1066,9 @@
       if (weekdays[i] === 6 && i > priorDays && needed[i] !== needed[i-1])
         impossible = "Le TIIH du week-end doit être couvert samedi et dimanche ensemble.";
     }
-    return {days, start, end, horizon, endIndex, monthEnd:days.indexOf(end), nurses, tasks, shiftIntervals, restIntervals, calendarWeeks, weekdays, impossible};
+    const ctx={days,start,end,horizon,endIndex,monthEnd,nurses,tasks,needed,shiftMinutes,shiftIntervals,restIntervals,calendarWeeks,weekdays,impossible,repairDates};
+    if (!impossible) setWorkTargets(state,D,ctx);
+    return ctx;
   }
 
   // A positive age is a night regime, a negative age a day regime. Work backwards
@@ -753,6 +1090,7 @@
         const night = k>=max, age = k%max+1;
         const bounds=night ? phaseBounds.N : phaseBounds.J;
         if (age>bounds.max) continue;
+        if (nurse.person.active_from===days[i] && !nurse.oldPhase[i] && age!==1) continue;
         if ((requiredMode !== null && requiredMode !== night) ||
             (nurse.oldPhase[i] !== null && nurse.oldPhase[i] !== (night?age:-age))) continue;
         let cost=0, to=-1;
@@ -788,7 +1126,7 @@
     const [ownStart,ownEnd] = ctx.shiftIntervals[i][work[i]];
     const nearby=[];
     let total=0;
-    for (let j=Math.max(0,i-8); j<=Math.min(work.length-1,i+8); j++) {
+    for (let j=Math.max(0,i-priorDays); j<=Math.min(work.length-1,i+priorDays); j++) {
       if (!work[j]) continue;
       const span=ctx.shiftIntervals[j][work[j]];
       if (span[0] >= ownEnd + weeklyMinutes || span[1] <= ownStart - weeklyMinutes) continue;
@@ -811,7 +1149,7 @@
   function withinCalendarWeek(ctx, work, i, index) {
     const [left,right] = ctx.calendarWeeks[index];
     let total=0;
-    for (let j=Math.max(0,i-8); j<=Math.min(work.length-1,i+8); j++) {
+    for (let j=Math.max(0,i-priorDays); j<=Math.min(work.length-1,i+priorDays); j++) {
       if (!work[j]) continue;
       const [begin,finish]=ctx.shiftIntervals[j][work[j]];
       total+=Math.max(0,Math.min(finish,right)-Math.max(begin,left));
@@ -824,31 +1162,22 @@
   function legalDay(ctx, nurse, i) {
     const work=nurse.work;
     const [start,end]=ctx.restIntervals[i][work[i]];
-    if (work[i-1] && start-ctx.restIntervals[i-1][work[i-1]][1] < 720) return false;
-    if (work[i+1] && ctx.restIntervals[i+1][work[i+1]][0]-end < 720) return false;
-    let run=1;
-    for(let k=i-1;k>=0 && work[k];k--) run++;
-    for(let k=i+1;k<work.length && work[k];k++) run++;
-    if (run>3) return false;
+    // A long TIIH can finish after a date without an assignment.
+    for (let j=Math.max(0,i-3); j<i; j++)
+      if (work[j] && start-ctx.restIntervals[j][work[j]][1]<720) return false;
+    for (let j=i+1; j<=Math.min(work.length-1,i+3); j++)
+      if (work[j] && ctx.restIntervals[j][work[j]][0]-end<720) return false;
+    for (let first=Math.max(0,i-4); first<=i; first++)
+      if (work[first] && work[first+1] && work[first+2] &&
+          (work[first+3] || work[first+4])) return false;
     const weekday=ctx.weekdays[i];
     if ((weekday===0 && dayShift(work[i]) && work[i-1]) ||
         (weekday===6 && dayShift(work[i+1]))) return false;
     if (!withinCalendarWeek(ctx,work,i,i)) return false;
-    // Sunday nights also contribute eight real hours to the following week.
-    if (weekday===6 && work[i]==="N" && !withinCalendarWeek(ctx,work,i,i+1)) return false;
+    if (ctx.shiftIntervals[i][work[i]][1]>ctx.calendarWeeks[i][1] &&
+        !withinCalendarWeek(ctx,work,i,i+7-weekday))
+      return false;
     return withinWeeklyLimit(ctx, work, i);
-  }
-
-  // Count only completed breaks bounded by two work series, with a known
-  // schedule throughout. Absences and missing history interrupt a break.
-  function precedingBreak(n, i) {
-    let days=0;
-    for (let j=i-1; j>=0; j--) {
-      if(n.work[j]) return days;
-      if(!n.known[j] || n.away[j]) break;
-      days++;
-    }
-    return 0;
   }
 
   // A preference on Friday's J helps reserve the same nurse for Saturday and
@@ -901,7 +1230,7 @@
   function search(ctx, state, D, random, attempt, deadline) {
     const {nurses,days,tasks} = ctx;
     const settings=state.settings;
-    const order=nurses.slice();
+    const order=nurses.filter(n=>n.active.slice(priorDays,ctx.endIndex+1).some(Boolean));
     for (let i=order.length-1;i>0;i--) {
       const j=Math.floor(random()*(i+1));
       [order[i],order[j]]=[order[j],order[i]];
@@ -941,13 +1270,13 @@
         const legal=indices.every(j=>legalDay(ctx,n,j));
         for (const j of changed) n.work[j]=null;
         if (!legal) continue;
-        const quota=n.averagedQuotas[year]/100;
-        let cost=n.loads[year]/quota;
-        if(code==="J" || code==="N") cost+=1080*n.counts[code]/quota;
+        let cost=n.loads[year]-n.targetAt[i];
+        // The same assignment represents a larger fraction of a short
+        // contract, including when a temporary percentage begins mid-series.
+        for (const j of changed) cost+=ctx.shiftMinutes[j][code]*(100/n.quotas[j]-1)*0.5;
+        if(code==="J" || code==="N") cost+=1080*(n.counts[code]-n.expectedCount[i]);
         const inSameSeries=code==="N" ? (shift=>shift==="N") : dayShift;
         if(inSameSeries(n.work[i-1]) || inSameSeries(n.work[indices.at(-1)+1])) cost-=1600;
-        const gap=precedingBreak(n,i);
-        if (gap>=2) cost-=Math.min(gap-1,7)*620;
         if(code==="J" && ctx.weekdays[i]===4 && canExtendFriday(ctx,n,i)) cost-=1150;
         if(code==="J" && ctx.weekdays[i]===5 && n.work[i-1]==="J") cost-=2300;
         cost+=random()*900;
@@ -957,20 +1286,20 @@
       for (const {n,changed} of ranked) {
         for (const j of changed) {
           n.work[j]=code;
-          n.loads[days[j].slice(0,4)] += D.SHIFT_MINUTES[code];
+          n.loads[days[j].slice(0,4)] += ctx.shiftMinutes[j][code];
           if(j<=ctx.monthEnd && code!=="T") n.counts[code]++;
         }
         if (visit(k+1)) return true;
         for (const j of changed) {
           n.work[j]=null;
-          n.loads[days[j].slice(0,4)] -= D.SHIFT_MINUTES[code];
+          n.loads[days[j].slice(0,4)] -= ctx.shiftMinutes[j][code];
           if(j<=ctx.monthEnd && code!=="T") n.counts[code]--;
         }
       }
       return false;
     }
     if (!visit(0)) return null;
-    let isolated=0, isolatedDays=0, skippedFriday=0, surplusRest=0;
+    let isolated=0, isolatedDays=0, skippedFriday=0;
     const candidate=JSON.parse(JSON.stringify(state));
     for(let i=priorDays;i<=ctx.endIndex;i++) {
       const day=days[i];
@@ -978,11 +1307,11 @@
       candidate.phases[day]??={};
       candidate.reviewed[day]??=[];
       for(const n of nurses) {
+        if (!n.active[i]) continue;
         if (i<=ctx.monthEnd && n.work[i]) {
           if (n.work[i]==="N" && n.work[i-1]!=="N" && n.work[i+1]!=="N") isolated++;
           if (dayShift(n.work[i]) && !dayShift(n.work[i-1]) && !dayShift(n.work[i+1])) isolatedDays++;
           if (ctx.weekdays[i]===5 && n.work[i]==="J" && n.work[i-1]!=="J") skippedFriday++;
-          surplusRest+=Math.max(0,precedingBreak(n,i)-2);
         }
         if (n.editable[i]) {
           candidate.assignments[day][n.id]={shift:n.work[i]||"-",locked:false,confirmed:false};
@@ -999,19 +1328,19 @@
     for(const day of days.slice(priorDays,ctx.endIndex+1)) {
       if(!candidate.reviewed[day].length) delete candidate.reviewed[day];
     }
-    const balance=Object.keys(nurses[0].loads).reduce((sum,year)=>{
-      const loads=nurses.map(n=>n.loads[year]/(n.averagedQuotas[year]/100));
+    const balance=Object.keys(order[0].loads).reduce((sum,year)=>{
+      const loads=order.filter(n=>days.some((day,i)=>i>=priorDays && i<=ctx.endIndex &&
+        day.startsWith(year) && n.active[i])).map(n=>n.loads[year]-n.workTargets[year]);
       return sum+Math.max(...loads)-Math.min(...loads);
     },0);
     let shiftImbalance=0;
     for(const code of ["J","N"]) {
-      const counts=nurses.map(n=>n.counts[code]*100/n.averagedQuotas[ctx.start.slice(0,4)]);
+      const counts=order.filter(n=>n.countTarget>0).map(n=>n.counts[code]-n.countTarget);
       const average=counts.reduce((sum,count)=>sum+count,0)/counts.length;
       shiftImbalance+=counts.reduce((sum,count)=>sum+(count-average)**2,0);
     }
-    const score=shiftImbalance*180 + balance*0.2 + (isolated+isolatedDays)*320 +
-      surplusRest*180 + skippedFriday*520;
-    return {candidate,isolated,isolatedDays,surplusRest,score};
+    const score=shiftImbalance*180 + balance*0.2 + (isolated+isolatedDays)*320 + skippedFriday*520;
+    return {candidate,isolated,isolatedDays,score};
   }
 
   function generate(state, year, month, {timeLimitMs=1800, seed=Date.now()}={}) {
@@ -1020,23 +1349,30 @@
     let ctx;
     try { ctx=prepare(state,year,month,D); }
     catch(e) {return result("invalid_input",String(e.message||e));}
-    if (ctx.impossible) return result("infeasible",ctx.impossible);
     const random=randomGenerator(seed);
-    let best=null, firstSuccess=null;
-    for(let attempt=0;attempt<250 && now()<deadline;attempt++) {
-      if(firstSuccess!==null && now()-firstSuccess>950) break;
-      const found=search(ctx,state,D,random,attempt,deadline);
-      if (!found || (best && found.score>=best.score)) continue;
-      const issues=D.validateSchedule(found.candidate,ctx.start,ctx.horizon);
-      if(issues.some(issue=>issue.severity==="error")) continue;
-      best=found;
-      firstSuccess??=now();
+    let best=null, repaired=false;
+    for(let stage=0;stage<=1;stage++) {
+      const retry=stage===0 && ctx.repairDates?.size;
+      const stop=retry?now()+(deadline-now())*0.4:deadline;
+      if (ctx.impossible && !retry) return result("infeasible",ctx.impossible);
+      let firstSuccess=null;
+      for(let attempt=0;!ctx.impossible && attempt<250 && now()<stop;attempt++) {
+        if(firstSuccess!==null && now()-firstSuccess>950) break;
+        const found=search(ctx,state,D,random,attempt,stop);
+        if (!found || (best && found.score>=best.score)) continue;
+        const issues=D.validateSchedule(found.candidate,ctx.start,ctx.horizon);
+        if(issues.some(issue=>issue.severity==="error")) continue;
+        best=found;
+        firstSuccess??=now();
+      }
+      if (best || !retry) break;
+      ctx=prepare(state,year,month,D,ctx.repairDates);
+      repaired=true;
     }
     if (!best) return result("unknown","Aucune proposition trouvée dans le temps de recherche. Vérifiez les absences, les postes protégés et les besoins TIIH. Vous pouvez relancer la recherche.");
-    const restGapDays=ctx.nurses.reduce((sum,n)=>sum+D.restGaps(best.candidate,n.id,ctx.start,ctx.end)
-      .reduce((days,gap)=>days+Math.max(0,gap.days-2),0),0);
-    return {...result("feasible","Proposition contrôlée, avec anticipation jusqu’au "+ctx.horizon+".",
-      best.candidate,ctx.horizon,best.isolated), isolatedDays:best.isolatedDays,restGapDays};
+    const update=repaired?" Des affectations prévisionnelles autour des dates en conflit ont été recalculées.":"";
+    return {...result("feasible","Proposition contrôlée, avec anticipation jusqu’au "+ctx.horizon+"."+update,
+      best.candidate,ctx.horizon,best.isolated), isolatedDays:best.isolatedDays};
   }
   globalThis.PlannerEngine=Object.freeze({generate});
 })();
@@ -1079,6 +1415,13 @@
     return rows;
   }
 
+  function shiftLabel(state, day, code, label) {
+    if (code !== "T") return label;
+    const minutes = globalThis.PlannerDomain.shiftMinutes(state,day,code);
+    const duration = Math.floor(minutes / 60) + ":" + String(minutes % 60).padStart(2,"0");
+    return "TIIH (" + duration + ")";
+  }
+
   function toLegacyFile(file) {
     const text = file.content.replace(/^\uFEFF/, "");
     const delimiter = /^(?:"IDE"|IDE)([;,])/i.exec(text)?.[1];
@@ -1105,10 +1448,13 @@
       const entries = result[name] = Object.create(null);
       days.forEach((day, column) => {
         const label = row[column+1].trim().toUpperCase();
-        if (["","NON RENSEIGNÉ","INCONNU","À RENSEIGNER"].includes(label)) return;
+        if (["","NON RENSEIGNÉ","INCONNU","À RENSEIGNER","HORS EFFECTIF"].includes(label)) return;
         if (label === "ABSENCE") { missingAbsences.push(name + " · " + day); return; }
-        if (!labels.has(label)) throw Error(file.name + " : poste non reconnu pour " + name + " le " + day + " (« " + row[column+1] + " »).");
-        entries[String(Number(day.slice(-2)))] = labels.get(label);
+        // The history importer checks explicit durations and rejects conflicting
+        // records across files. Older exports carry only the shift code.
+        const value = /^TIIH \(\d{1,2}:[0-5]\d\)$/.test(label) ? label : labels.get(label);
+        if (!value) throw Error(file.name + " : poste non reconnu pour " + name + " le " + day + " (« " + row[column+1] + " »).");
+        entries[String(Number(day.slice(-2)))] = value;
       });
     }
     const warnings = [];
@@ -1121,7 +1467,221 @@
       throw Error(file.name + " : le CSV ne contient aucun poste ni repos renseigné. Utilisez une sauvegarde JSON pour reprendre les absences.");
     return {name: "planning_" + month.replace("-", "_") + ".json", content: JSON.stringify(result), warnings};
   }
-  globalThis.PlannerCSV = Object.freeze({toLegacyFile});
+  globalThis.PlannerCSV = Object.freeze({toLegacyFile,shiftLabel});
+})();
+
+</script>
+<script>
+/* Staffing dates and temporary contract percentages for the offline planner. */
+(() => {
+  "use strict";
+  const D = globalThis.PlannerDomain;
+  const escape = value => String(value ?? "").replace(/[&<>"']/g,
+    ch => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[ch]);
+  const dateLabel = date => date ? date.split("-").reverse().join("/") : "—";
+  const button = (command, label, data = "", css = "") =>
+    '<button type="button" class="'+css+'" data-act="team-manage" data-command="'+command+'" '+data+'>'+label+'</button>';
+  const attr = (key, val) => 'data-'+key+'="'+escape(val)+'"';
+
+  function view(state, {day}) {
+    const nurses = state.nurses;
+    const dated = nurses.filter(n => n.active_from || n.active_until);
+    const periods = nurses.flatMap(n => (n.quota_periods || []).map(p => ({n,p})))
+      .sort((a,b) => a.p.from.localeCompare(b.p.from) || a.n.name.localeCompare(b.n.name,"fr"));
+    const staffingTable = dated.length ? '<div class="scroll"><table><thead><tr><th>Agent</th><th>Entrée</th><th>Dernier jour inclus</th><th>Départ</th></tr></thead><tbody>'+
+      dated.map(n => '<tr><th scope="row">'+escape(n.name)+'</th><td>'+dateLabel(n.active_from)+'</td><td>'+dateLabel(n.active_until)+'</td><td>'+
+        (n.active_until ? button("return","Annuler le départ",attr("id",n.id),"mini") : "—")+'</td></tr>').join("")+
+      '</tbody></table></div>' : "";
+    const periodTable = periods.length ? '<div class="scroll"><table><thead><tr><th>Agent</th><th>Du</th><th>Au inclus</th><th>Quotité</th><th>Actions</th></tr></thead><tbody>'+
+      periods.map(({n,p}) => {
+        const target = attr("id",n.id)+" "+attr("period",p.id);
+        return '<tr><th scope="row">'+escape(n.name)+'</th><td>'+dateLabel(p.from)+'</td><td>'+dateLabel(p.to)+'</td><td>'+p.percent+' %</td><td><div class="actions">'+
+          button("period","Modifier",target,"mini")+button("delete-period","Supprimer",target,"mini")+'</div></td></tr>';
+      }).join("")+'</tbody></table></div>' : "";
+    return '<div class="cols"><section class="panel"><h2>Effectif</h2><p class="hint">'+
+      nurses.filter(n=>D.isActive(n,day)).length+' agent(s) en poste au '+dateLabel(day)+'.</p><div class="actions">'+
+      button("add","Ajouter un agent",attr("day",day),"primary")+
+      (nurses.length ? button("exit","Retirer un agent",attr("day",day)) : "")+'</div>'+staffingTable+
+      '</section><section class="panel"><h2>Quotités temporaires</h2><p class="hint">À la fin d’une période, la quotité de base en vigueur reprend automatiquement.</p>'+
+      (nurses.length ? button("period","Ajouter une période",attr("day",day)) : "")+periodTable+'</section></div>';
+  }
+
+  function open(dialog, operation, title, body, submitLabel, attributes="") {
+    dialog.innerHTML='<form data-form="team-management" data-operation="'+operation+'" '+attributes+
+      '><h2 id="dialog-title">'+escape(title)+'</h2>'+body+'<p role="alert" class="issueerror"></p><div class="actions">'+
+      '<button type="button" data-act="close">Annuler</button><button type="submit" class="primary">'+escape(submitLabel)+'</button></div></form>';
+    if (!dialog.open) dialog.showModal();
+  }
+  function options(nurses, selected) {
+    return nurses.map(n => '<option value="'+escape(n.id)+'"'+(n.id===selected?" selected":"")+'>'+escape(n.name)+'</option>').join("");
+  }
+  function dateField(label,name,value) {
+    return '<label class="field">'+label+'<input required type="date" name="'+name+'" value="'+escape(value)+'"></label>';
+  }
+  function percentage(label,value) {
+    return '<label class="field">'+label+'<input type="number" min="1" max="100" step="1" required name="percent" value="'+escape(value)+'" placeholder="80"></label>';
+  }
+  function action(element,{state,dialog}) {
+    const {command,id,period,day} = element.dataset;
+    const nurse = state.nurses.find(n=>n.id===id);
+    const item = nurse?.quota_periods?.find(p=>p.id===period);
+    const target = attr("id",id)+" "+attr("period",period);
+    if (command==="add") {
+      open(dialog,"add","Ajouter un agent",'<label class="field">Nom de l’agent<input required maxlength="90" name="name" autocomplete="off"></label>'+
+        dateField("Date d’entrée dans l’équipe","from",day)+percentage("Quotité de base (%)",100),"Ajouter l’agent");
+    } else if (command==="exit") {
+      open(dialog,"exit-preview","Retirer un agent",'<label class="field">Agent<select required name="nurse">'+
+        options(state.nurses)+'</select></label>'+dateField("Dernier jour dans l’équipe (inclus)","last",day),"Examiner le retrait");
+    } else if (command==="return" && nurse) {
+      open(dialog,"return","Annuler le départ de "+nurse.name+" ?",'<p>La fiche indique un dernier jour au '+dateLabel(nurse.active_until)+
+        '. L’agent redeviendra disponible après cette date pour les prochaines générations.</p>',"Annuler ce départ",target);
+    } else if (command==="period") {
+      const who = item ? '<p>'+escape(nurse.name)+'</p>' :
+        '<label class="field">Agent<select required name="nurse">'+options(state.nurses)+'</select></label>';
+      open(dialog,"period",item?"Modifier la période":"Ajouter une période de quotité",who+
+        dateField("Début inclus","from",item?.from||day)+dateField("Fin incluse","to",item?.to||"")+
+        percentage("Quotité temporaire (%)",item?.percent??""),"Enregistrer la période",target);
+    } else if (command==="delete-period" && item) {
+      open(dialog,"delete-period","Supprimer cette période ?",'<p>'+escape(nurse.name)+' · '+item.percent+' % du '+dateLabel(item.from)+
+        ' au '+dateLabel(item.to)+'. La quotité de base s’appliquera sur ces dates.</p>',"Supprimer la période",target);
+    }
+  }
+  function affectedList(shifts) {
+    if (!shifts.length) return "";
+    return '<details><summary>Voir les postes concernés</summary><ul>'+shifts.map(a=>'<li>'+dateLabel(a.day)+' · '+
+      escape(D.SHIFT_LABELS[a.shift])+'</li>').join("")+'</ul></details>';
+  }
+  function submit(form,{state,dialog,save}) {
+    const operation = form.dataset.operation;
+    const fields = new FormData(form);
+    const get = key => String(fields.get(key)??"");
+    const candidate = JSON.parse(JSON.stringify(state));
+    const id = form.dataset.id || get("nurse");
+    const nurse = candidate.nurses.find(n=>n.id===id);
+    let message;
+    switch(operation) {
+      case "add":
+        D.addNurse(candidate,{name:get("name").trim(),from:get("from"),percent:Number(get("percent"))});
+        message="Agent ajouté à l’équipe."; break;
+      case "exit-preview": {
+        const last = get("last");
+        const impact = D.nurseExitImpact(candidate,id,last);
+        if (impact.protected.length) {
+          const first = impact.protected[0];
+          throw Error(impact.protected.length+' poste(s) confirmé(s) ou verrouillé(s) après cette sortie, dont '+
+            D.SHIFT_LABELS[first.shift]+' le '+dateLabel(first.day)+'. Vérifiez ces postes ou choisissez un autre dernier jour.');
+        }
+        const count=impact.drafts.length;
+        open(dialog,"exit","Confirmer le retrait de "+nurse.name+" ?",'<p>Dernier jour dans l’équipe : <strong>'+dateLabel(last)+
+          '</strong>. Son historique jusqu’à cette date reste consultable.</p><p>'+count+' poste(s) de brouillon à réattribuer après le départ.</p>'+
+          affectedList(impact.drafts),"Confirmer le retrait",attr("id",id)+" "+attr("last",last));
+        return;
+      }
+      case "exit":
+        D.setNurseExit(candidate,id,form.dataset.last);
+        message="Départ enregistré. Le planning tient compte du dernier jour dans l’équipe."; break;
+      case "return":
+        D.setNurseExit(candidate,id,null);
+        message="Départ annulé."; break;
+      case "period": {
+        const period={from:get("from"),to:get("to"),percent:Number(get("percent"))};
+        if (form.dataset.period) period.id=form.dataset.period;
+        D.setQuotaPeriod(nurse,period);
+        message="Période de quotité enregistrée."; break;
+      }
+      case "delete-period":
+        D.removeQuotaPeriod(nurse,form.dataset.period);
+        message="Période supprimée. La quotité de base s’applique à ces dates."; break;
+      default: throw Error("Action de gestion d’équipe inconnue.");
+    }
+    save(candidate,message);
+    dialog.close();
+  }
+  globalThis.PlannerTeamManagement=Object.freeze({view,action,submit});
+})();
+
+</script>
+<script>
+/* Each submitted edit has its own immutable body, base revision and retry key. */
+(() => {
+  "use strict";
+  function connect(run, {prepare, receive, canRefresh, active, changed, saved}) {
+    let revision=null, phase="loading", error="", readVersion=0, reading=false, writing=false;
+    const queue=[];
+    const signal=(next,reason="")=>{phase=next; error=reason; changed();};
+    function rpc(method,args=[]) {
+      return new Promise((resolve,reject)=>{
+        const timer=setTimeout(()=>reject(Error("Google Sheets ne répond pas. Vérifiez la connexion puis réessayez.")),35000);
+        const ok=value=>{clearTimeout(timer);resolve(value);};
+        const fail=problem=>{clearTimeout(timer);reject(Error(problem?.message || "La connexion à Google Sheets a échoué."));};
+        try {run.withSuccessHandler(ok).withFailureHandler(fail)[method](...args);}
+        catch(e) {fail(e);}
+      });
+    }
+    function readRecord(data) {
+      if(!data || !Number.isSafeInteger(data.revision) || data.revision<0 ||
+          !(typeof data.body==="string" || data.revision===0 && data.body===null))
+        throw Error("Réponse de lecture Google Sheets invalide.");
+      return prepare(data.body);
+    }
+    async function read({force=false,discard=false}={}) {
+      if(!active() || writing || queue.length && !discard || !force && (reading || !canRefresh())) return;
+      const attempt=++readVersion;
+      reading=true;
+      if(force) signal(discard?"reloading":"loading");
+      try {
+        const data=await rpc("readPlanning");
+        if(attempt!==readVersion || !active()) return;
+        if(!force && !canRefresh()) return;
+        if(!force && data?.revision===revision && phase!=="read-error" && phase!=="refresh-error") return;
+        const model=readRecord(data);
+        if(discard) queue.length=0;
+        revision=data.revision;
+        signal(data.body===null?"empty":"ready");
+        receive(model);
+      } catch(e) {
+        if(attempt===readVersion && active()) signal(queue.length?"conflict":force?"read-error":"refresh-error",e.message);
+      } finally {
+        if(attempt===readVersion) reading=false;
+      }
+    }
+    async function drain() {
+      if(writing || !queue.length) return;
+      writing=true;
+      try {
+        signal("saving");
+        while(queue.length) {
+          const job=queue[0];
+          if(job.base===null) job.base=revision;
+          const result=await rpc("writePlanning",[job.base,job.body,job.id]);
+          if(result?.ok===false && result.conflict===true) {
+            signal("conflict","Une autre fenêtre a enregistré une version plus récente.");
+            return;
+          }
+          if(result?.ok!==true || !Number.isSafeInteger(result.revision) || result.revision!==job.base+1)
+            throw Error("Confirmation d’enregistrement Google Sheets invalide.");
+          queue.shift();
+          revision=result.revision;
+          if(!queue.length) {signal("saved"); saved(job.message,typeof result.viewWarning==="string"?result.viewWarning:"");}
+        }
+      } catch(e) { signal("write-error",e.message); }
+      finally {writing=false;}
+    }
+    function enqueue(body,message) {
+      if(revision===null || phase==="reloading" || phase==="loading" || phase==="read-error") throw Error("Attendez le chargement du planning partagé avant d’enregistrer.");
+      const id=globalThis.crypto.randomUUID?.() ?? Array.from(globalThis.crypto.getRandomValues(new Uint8Array(16)),x=>x.toString(16).padStart(2,"0")).join("");
+      readVersion++; reading=false;
+      queue.push({id,body,message,base:null});
+      if(phase!=="conflict" && phase!=="write-error") void drain();
+      else changed();
+    }
+    return Object.freeze({
+      read, enqueue, retry:drain,
+      get phase(){return phase;}, get error(){return error;},
+      get pending(){return queue.length>0;}, get revision(){return revision;}
+    });
+  }
+  globalThis.PlannerSheetsSync=Object.freeze({connect});
 })();
 
 </script>
@@ -1147,15 +1707,17 @@
   const today = ["year","month","day"].map(k => todayParts.find(x=>x.type===k).value).join("-");
   const baseKey = "planning-ide.hors-ligne.v2";
   let page = "planning", period = today.slice(0,7), week = -1, demo = false;
-  let planningMode="team", selectedNurseId=null;
+  let planningMode="team", selectedNurseId=null, editingTiih=null, teamDay=null;
   let proposal = null, absenceId = "", storageAvailable = true, stored = null, broken = false, busy = false, state;
+  let cloud=null, formEdited=false;
+  const cloudActive=()=>Boolean(cloud && !demo);
   const key = () => baseKey+(demo?".demo":"");
   function notify(message="", failed=false) {
     const el = document.getElementById("feedback");
     el.classList.toggle("error",failed);
     el.textContent = message;
   }
-  function load() {
+  function loadLocal() {
     let raw = null;
     storageAvailable = true; broken = false;
     try { raw = localStorage.getItem(key()); } catch { storageAvailable = false; }
@@ -1166,11 +1728,26 @@
     }
     state = D.newState(Number(today.slice(0,4)));
   }
+  function openSpace() {
+    if(!cloudActive()) {
+      loadLocal();
+      if(!storageAvailable) notify("L’enregistrement automatique est indisponible. Exportez une sauvegarde JSON avant de fermer cette page.",true);
+      render();
+      return;
+    }
+    state=null; broken=false; stored=null; storageAvailable=true;
+    render(); void cloud.read({force:true});
+  }
   function save(candidate,message,{replace=false}={}) {
     D.validateState(candidate);
     if(broken && !replace) throw Error("Restaurez d’abord une sauvegarde valide dans Imports et exports.");
     candidate.revision = Math.max(state.revision || 0,candidate.revision || 0)+1;
     const encoded = JSON.stringify(candidate);
+    if(cloudActive()) {
+      cloud.enqueue(encoded,message);
+      state=candidate; broken=false; proposal=null;
+      notify(); render(); return;
+    }
     if(storageAvailable) {
       let current;
       try { current = localStorage.getItem(key()); }
@@ -1198,24 +1775,64 @@
   const range = () => D.monthBounds(year(),month());
   const days = () => D.dates(...range());
   const opt = (value,text,on=false) => '<option value="'+esc(value)+'"'+(on?' selected':'')+'>'+esc(text)+'</option>';
-  const nurseOptions = id => state.nurses.map(n=>opt(n.id,n.name,n.id===id)).join("");
+  function rosterDuring(s,dates) {
+    return s.nurses.filter(n=>dates.some(day=>D.isActive(n,day)));
+  }
+  const nurseOptions = (roster,id) => roster.map(n=>opt(n.id,n.name,n.id===id)).join("");
+  const defaultDay = () => today.startsWith(period)?today:range()[0];
   const nameOf = id => state.nurses.find(n=>n.id===id)?.name ?? "";
   const dataAtt = (name,val) => 'data-'+name+'="'+esc(val)+'"';
   function setPeriod(value) {
     if(!/^\d{4}-(0[1-9]|1[0-2])$/.test(value) || Number(value.slice(0,4))<1900 || Number(value.slice(0,4))>2199) throw Error("Choisissez un mois entre 1900 et 2199.");
-    period=value; week=-1; proposal=null; absenceId=""; notify(); render();
+    period=value; teamDay=null; week=-1; proposal=null; absenceId=""; notify(); render();
   }
   function switchSpace(toDemo) {
-    demo=toDemo; page="planning"; week=-1; proposal=null; absenceId=""; notify(); load(); render();
+    if(cloudActive() && cloud.pending) throw Error("Terminez l’enregistrement dans Google Sheets ou rechargez la version partagée avant de changer d’équipe.");
+    demo=toDemo; page="planning"; teamDay=null; week=-1; proposal=null; absenceId=""; notify(); openSpace();
+  }
+  function syncStatus() {
+    const status=document.getElementById("storage-status"), controls=document.getElementById("cloud-controls");
+    controls.innerHTML="";
+    if(!cloudActive()) {
+      status.textContent=demo?"Équipe fictive · Essai":storageAvailable?"Sur cet appareil":"Sauvegarde JSON requise";
+      return;
+    }
+    const phase=cloud.phase;
+    const labels={loading:"Chargement de Google Sheets…",reloading:"Rechargement de Google Sheets…",empty:"Google Sheets · Nouveau planning",
+      ready:"Google Sheets · Planning partagé",saving:"Enregistrement dans Google Sheets…",saved:"Enregistré dans Google Sheets",
+      "read-error":"Google Sheets · Lecture impossible","refresh-error":"Google Sheets · Actualisation impossible",
+      "write-error":"Google Sheets · Brouillon en attente",conflict:"Google Sheets · Conflit d’enregistrement"};
+    status.textContent=labels[phase];
+    if(phase==="saving") {
+      controls.innerHTML='<p class="hint">Enregistrement dans Google Sheets… Gardez cette fenêtre ouverte jusqu’à la confirmation.</p>';
+    } else if(phase==="conflict" || phase==="write-error") {
+      controls.innerHTML='<aside class="notice sync-error"><div><strong>'+esc(labels[phase])+'</strong><p>'+esc(cloud.error)+' Votre brouillon est disponible dans cette fenêtre.</p></div><div class="actions">'+
+        btn("cloud-draft","Exporter mon brouillon JSON")+btn("cloud-retry","Réessayer l’enregistrement")+btn("cloud-reload","Recharger la version partagée")+'</div></aside>';
+    } else if(phase==="read-error" || phase==="refresh-error") {
+      controls.innerHTML='<aside class="notice sync-error"><p>'+esc(cloud.error)+'</p>'+btn("cloud-read","Réessayer la lecture")+'</aside>';
+    }
   }
   function render() {
-    document.getElementById("storage-status").textContent = demo ? "Équipe fictive · Essai" : storageAvailable?"Sur cet appareil":"Sauvegarde JSON requise";
+    formEdited=false;
+    syncStatus();
+    if(cloudActive() && !state) {
+      nav.innerHTML="";
+      main.innerHTML='<section class="panel"><h1>Planning partagé</h1><p>'+ (cloud.phase==="read-error"?"La lecture du planning a échoué.":"Ouverture du planning depuis ce classeur…")+'</p></section>';
+      return;
+    }
     nav.innerHTML=Object.entries(pages).map(([k,v])=>btn("page",v,"",dataAtt("page",k)+(k===page?' aria-current="page"':''))).join("");
     const bar=demo?'<aside class="notice"><p><strong>Équipe fictive</strong> · Les changements de cet essai sont conservés séparément.</p>'+btn("exit-demo","Revenir à mon équipe")+'</aside>':"";
     main.innerHTML=bar+({planning:planningView,absence:absenceView,tiih:tiihView,team:teamView,annual:annualView,files:filesView}[page])()+(page==="team"?phaseView():page==="files"?legacyView():"");
     if(page==="team") syncPhase();
+    if(page==="absence") {
+      const form=main.querySelector('form[data-form=absence]');
+      syncDatedNurses(form,form.elements.from.value,state.absences.find(a=>a.id===absenceId)?.nurse_id);
+    }
+    if(page==="tiih") syncTiih(main.querySelector('form[data-form=tiih]'));
   }
   function cellInfo(s,id,day) {
+    const nurse=s.nurses.find(n=>n.id===id);
+    if(!nurse || !D.isActive(nurse,day)) return {code:"X",label:"Hors effectif",a:null,unknown:false};
     const a=s.assignments[day]?.[id];
     const shift=a?.shift||"-";
     const code=shift==="-" && D.absenceOn(s,id,day)?"A":shift;
@@ -1226,14 +1843,14 @@
   const shiftFamily = code => code==="J" || code==="T" ? "J" : code==="N" ? "N" : null;
   function balanceRows(s) {
     const [start,end]=range();
-    const rows=new Map(s.nurses.map(n=>[n.id,{name:n.name,pastJ:0,pastN:0,J:0,N:0,T:0,aloneJ:0,aloneN:0}]));
+    const rows=new Map(rosterDuring(s,days()).map(n=>[n.id,{name:n.name,pastJ:0,pastN:0,J:0,N:0,T:0,aloneJ:0,aloneN:0}]));
     const idsWithAbsences=new Set(s.absences.map(a=>a.nurse_id));
     const conflicts=(id,day,code)=>idsWithAbsences.has(id) && D.absentFor(s,id,day,code);
     for(const [day,assignments] of Object.entries(s.assignments)) {
       if(day>end) continue;
       for(const [id,{shift}] of Object.entries(assignments)) {
         const family=shiftFamily(shift);
-        if(!family || conflicts(id,day,shift)) continue;
+        if(!rows.has(id) || !family || conflicts(id,day,shift)) continue;
         const row=rows.get(id);
         if(day<start) {
           if(shift==="J" || shift==="N") row["past"+shift]++;
@@ -1265,37 +1882,53 @@
     const [start,end]=range(), all=days(), s=proposal?.candidate||state;
     const issueList=D.validateSchedule(s,start,end);
     const monthName=dateFmt(start,{month:"long",year:"numeric"});
-    const missing=state.nurses.filter(n=>D.quotaOn(n,start)==null).length;
-    let out=title(monthName[0].toUpperCase()+monthName.slice(1),picker()+btn("generate",busy?"Recherche en cours…":"Générer une proposition","primary",busy || missing || proposal?"disabled":""));
+    const roster=rosterDuring(s,all);
+    const missing=roster.filter(n=>all.some(day=>D.isActive(n,day) && D.quotaOn(n,day)==null)).length;
+    let out=title(monthName[0].toUpperCase()+monthName.slice(1),picker()+btn("generate",busy?"Recherche en cours…":"Générer une proposition","primary",busy || missing || proposal || !roster.length?"disabled":""));
     if(!demo && !proposal && !Object.keys(state.assignments).length)
-      out+='<aside class="notice"><p><strong>Démarrer le planning</strong><br>Vous pouvez reprendre les postes d’un ancien planning ou essayer avec des noms fictifs.</p><div class="actions">'+btn("page","Importer un planning","",dataAtt("page","files"))+btn("demo","Essayer avec une équipe fictive")+'</div></aside>';
+      out+='<aside class="notice"><p><strong>'+(cloudActive() && cloud.phase==="empty"?"Démarrer dans ce classeur":"Démarrer le planning")+'</strong><br>Vous pouvez reprendre les postes d’un ancien planning ou essayer avec des noms fictifs.</p><div class="actions">'+btn("page","Importer un planning","",dataAtt("page","files"))+btn("demo","Essayer avec une équipe fictive")+'</div></aside>';
     if(missing && !proposal) out+='<aside class="notice"><p><strong>'+missing+' quotité'+(missing>1?'s':'')+' à compléter</strong><br>Renseignez les temps de travail pour générer le premier planning.</p>'+btn("page","Configurer l’équipe","primary",dataAtt("page","team"))+'</aside>';
-    if(!missing && !proposal && state.nurses.some(n=>D.quotaOn(n,start)<100))
-      out+='<aside class="notice"><p>Des IDE sont à temps partiel au '+esc(shortDay(start))+'. Vous pouvez choisir la date de leur passage à 100 %.</p>'+btn("page","Modifier les quotités","",dataAtt("page","team"))+'</aside>';
+    if(!missing && !proposal && roster.some(n=>D.isActive(n,start) && D.baseQuotaOn(n,start)!=null && D.baseQuotaOn(n,start)<100))
+      out+='<aside class="notice"><p>Des contrats de base sont à temps partiel au '+esc(shortDay(start))+'. Vous pouvez choisir la date de leur passage à 100 %.</p>'+btn("page","Modifier les quotités","",dataAtt("page","team"))+'</aside>';
     if(proposal) out+='<aside class="proposal"><div><strong>Proposition à examiner</strong><p>'+esc(proposal.message)+'</p><small>'+(proposal.end?'Affectations proposées jusqu’au '+esc(shortDay(proposal.end)):'')+'</small></div><div class="actions">'+btn("accept","Conserver la proposition","primary")+btn("discard","Écarter")+'</div></aside>';
     if(planningMode==="team") out+='<div class="metricgrid">'+["J","N","T"].map(code=>{
       const need=all.filter(d=>code!=="T"||D.tiihRequired(s,d));
       const covered=need.filter(d=>Object.values(s.assignments[d]||{}).filter(a=>a.shift===code).length===1).length;
-      return '<div class="metric"><span class="swatch '+code+'">'+code+'</span><div><div class="rolelabel">'+D.SHIFT_LABELS[code]+'</div><small>'+({J:"08 h – 20 h",N:"20 h – 08 h",T:"09 h – 16 h 42"})[code]+'</small></div><span class="value" title="Postes couverts sur postes requis">'+covered+' <small>/ '+need.length+'</small></span></div>';
+      return '<div class="metric"><span class="swatch '+code+'">'+code+'</span><div><div class="rolelabel">'+D.SHIFT_LABELS[code]+'</div><small>'+({J:"08 h – 20 h",N:"20 h – 08 h",T:"09 h · 7 h 42 par défaut"})[code]+'</small></div><span class="value" title="Postes couverts sur postes requis">'+covered+' <small>/ '+need.length+'</small></span></div>';
     }).join("")+'</div>';
-    const person=s.nurses.find(n=>n.id===selectedNurseId)??s.nurses[0];
-    selectedNurseId=person.id;
+    const person=roster.find(n=>n.id===selectedNurseId)??roster[0];
+    if(person) selectedNurseId=person.id;
     const individual=planningMode==="individual";
     out+='<section class="panel"><div class="panelhead"><div><h2>'+(proposal?"Planning proposé":"Planning enregistré")+'</h2><p class="subtle">'+(proposal?"Consultez les postes avant de conserver la proposition.":"Sélectionnez un poste ou une journée pour modifier l’affectation.")+'</p></div>'+
       '<div class="weekbar viewbar" role="group" aria-label="Vue du planning">'+btn("planning-mode","Équipe","",dataAtt("mode","team")+' aria-pressed="'+!individual+'"')+btn("planning-mode","Par IDE","",dataAtt("mode","individual")+' aria-pressed="'+individual+'"')+'</div></div>';
-    out+=individual?individualAgenda(s,person,all):teamGrid(s,all);
-    const visibleIssues=individual?issueList.filter(i=>i.nurse_id===person.id):issueList;
-    const gaps=visibleIssues.filter(i=>i.code==="rest_gap"), others=visibleIssues.filter(i=>i.code!=="rest_gap");
-    const errors=others.filter(i=>i.severity==="error"), warnings=others.filter(i=>i.severity!=="error");
-    if(gaps.length) out+='<details class="validation"><summary>Repos de plus de deux jours entre séries · '+gaps.length+'</summary><ul>'+gaps.map(i=>'<li>'+esc(i.message)+'</li>').join("")+'</ul></details>';
-    out+='<details class="validation"><summary>'+errors.length+' conflit(s) · '+warnings.length+' point(s) de contexte</summary><ul>'+others.map(i=>'<li class="'+(i.severity==="error"?"issueerror":"")+'">'+esc(i.message)+'</li>').join("")+'</ul></details></section>';
+    if(person) out+=individual?individualAgenda(s,person,all,roster):teamGrid(s,all,roster);
+    else out+='<div class="notice"><p>Aucune IDE dans l’effectif ce mois-ci.</p>'+btn("page","Gérer les agents","",dataAtt("page","team"))+'</div>';
+    const members=new Set(roster.map(n=>n.id));
+    const visibleIssues=individual?issueList.filter(i=>person && i.nurse_id===person.id):issueList.filter(i=>!i.nurse_id || members.has(i.nurse_id));
+    const errors=visibleIssues.filter(i=>i.severity==="error"), warnings=visibleIssues.filter(i=>i.severity!=="error");
+    out+='<details class="validation"><summary>'+errors.length+' conflit(s) · '+warnings.length+' point(s) de contexte</summary><ul>'+visibleIssues.map(i=>'<li class="'+(i.severity==="error"?"issueerror":"")+'">'+esc(i.message)+'</li>').join("")+'</ul></details></section>';
     if(!individual && proposal?.end>end) {
       const future=D.dates(D.addDays(end,1),proposal.end);
       out+='<details class="panel"><summary>Voir l’anticipation jusqu’au '+esc(shortDay(proposal.end))+'</summary><div class="scroll"><table><thead><tr><th>Date</th><th>SMUR J</th><th>SMUR N</th><th>TIIH</th></tr></thead><tbody>'+future.map(d=>'<tr><th>'+esc(shortDay(d))+'</th>'+["J","N","T"].map(c=>'<td>'+esc(s.nurses.filter(n=>s.assignments[d]?.[n.id]?.shift===c).map(n=>n.name).join(", ")||"—")+'</td>').join("")+'</tr>').join("")+'</tbody></table></div></details>';
     }
-    return out+(individual?"":balanceView(s,Boolean(proposal)))+'<div class="bottomaction actions">'+(!demo && Object.keys(state.assignments).length?btn("demo","Essayer avec une équipe fictive"):"")+btn("csv",individual?"Exporter toute l’équipe en CSV":proposal?"Exporter la proposition en CSV":"Exporter le mois en CSV")+'</div>';
+    return out+(individual || !roster.length?"":balanceView(s,Boolean(proposal)))+'<div class="bottomaction actions">'+(!demo && Object.keys(state.assignments).length?btn("demo","Essayer avec une équipe fictive"):"")+btn("csv",individual?"Exporter toute l’équipe en CSV":proposal?"Exporter la proposition en CSV":"Exporter le mois en CSV","",roster.length?"":"disabled")+'</div>';
   }
-  function teamGrid(s,all) {
+  function durationInput(minutes) {
+    return Math.floor(minutes/60)+":"+String(minutes%60).padStart(2,"0");
+  }
+  function tiihHours(day,minutes) {
+    const end=D.tiihWallEnd(day,minutes);
+    const start=Date.parse(day+"T00:00:00Z")/60000;
+    const dayOffset=Math.floor((end-start)/1440), clock=(end-start)%1440;
+    const time=clock===0?"minuit":Math.floor(clock/60)+" h"+(clock%60?" "+String(clock%60).padStart(2,"0"):"");
+    return "9 h – "+time+(dayOffset===1?" le lendemain":dayOffset===2?" le surlendemain":"");
+  }
+  function shiftHours(s,day,code) {
+    if(code==="J") return "8 h – 20 h";
+    if(code==="N") return "20 h – 8 h le lendemain";
+    return code==="T"?tiihHours(day,D.shiftMinutes(s,day,code)):"";
+  }
+  function teamGrid(s,all,roster) {
     const pageCount=Math.ceil(all.length/7);
     week=Math.max(-1,Math.min(pageCount-1,week));
     const full=week===-1, shown=full?all:all.slice(week*7,week*7+7);
@@ -1303,35 +1936,41 @@
     const pages=[pager(-1,"Mois entier"),...Array.from({length:pageCount},(_,i)=>pager(i,(i*7+1)+"–"+Math.min(all.length,i*7+7)))];
     const headings=shown.map(day=>'<th scope="col" class="'+(D.weekday(day)>4?"weekend":"")+'">'+
       esc(dateFmt(day,{weekday:full?"narrow":"short"}))+'<span>'+Number(day.slice(-2))+'</span></th>').join("");
-    const rows=s.nurses.map(n=>'<tr><th scope="row">'+esc(n.name)+'</th>'+shown.map(day=>{
+    const rows=roster.map(n=>'<tr><th scope="row">'+esc(n.name)+'</th>'+shown.map(day=>{
       const {code,label,a,unknown}=cellInfo(s,n.id,day);
-      const mark=unknown?"?":code==="-"?"—":full?code:code==="A"?"Abs.":D.SHIFT_LABELS[code];
+      const mark=code==="X"?(full?"×":"Hors effectif"):unknown?"?":code==="-"?"—":full?code:code==="A"?"Abs.":D.SHIFT_LABELS[code];
       const classes="cell "+(unknown?"unassigned":code==="-"?"empty":code)+(a?.locked||a?.confirmed?" locked":"");
-      const tag=esc(n.name+", "+shortDay(day)+", "+label);
-      return '<td class="'+(D.weekday(day)>4?"weekend":"")+'">'+btn("cell",mark,classes,dataAtt("nurse",n.id)+' '+dataAtt("day",day)+' aria-label="'+tag+'" title="'+tag+'"'+(proposal?" disabled":""))+'</td>';
+      const slot=shiftHours(s,day,code);
+      const tag=esc(n.name+", "+shortDay(day)+", "+label+(slot?", "+slot:""));
+      return '<td class="'+(D.weekday(day)>4?"weekend":"")+'">'+btn("cell",mark,classes,dataAtt("nurse",n.id)+' '+dataAtt("day",day)+' aria-label="'+tag+'" title="'+tag+'"'+(proposal || code==="X"?" disabled":""))+'</td>';
     }).join("")+'</tr>').join("");
-    return '<div class="weekbar date-range" role="group" aria-label="Jours du mois">'+pages.join("")+'</div><div class="scroll"><table class="grid'+(full?" full-grid":"")+'"><thead><tr><th scope="col">IDE</th>'+headings+'</tr></thead><tbody>'+rows+'</tbody></table></div><div class="legend"><span><b class="J"></b>J · SMUR jour</span><span><b class="N"></b>N · SMUR nuit</span><span><b class="T"></b>T · TIIH</span><span><b class="A"></b>A · Absence</span><span>— Repos</span><span>? Non renseigné</span><span>• Poste protégé</span></div>';
+    const adjusted=shown.filter(day=>D.tiihRequired(s,day) && D.shiftMinutes(s,day,"T")!==D.SHIFT_MINUTES.T);
+    const times=adjusted.length?'<p class="tiih-adjusted"><strong>Horaires TIIH modifiés</strong> · '+adjusted.map(day=>esc(shortDay(day))+' ('+tiihHours(day,D.shiftMinutes(s,day,"T"))+')').join(' · ')+'</p>':"";
+    return '<div class="weekbar date-range" role="group" aria-label="Jours du mois">'+pages.join("")+'</div><div class="scroll"><table class="grid'+(full?" full-grid":"")+'"><thead><tr><th scope="col">IDE</th>'+headings+'</tr></thead><tbody>'+rows+'</tbody></table></div><div class="legend"><span><b class="J"></b>J · SMUR jour</span><span><b class="N"></b>N · SMUR nuit</span><span><b class="T"></b>T · TIIH</span><span><b class="A"></b>A · Absence</span><span>— Repos</span><span>? Non renseigné</span><span>× Hors effectif</span><span>• Poste protégé</span></div>'+times;
   }
-  function individualAgenda(s,person,all) {
-    const schedule={J:"8 h – 20 h",N:"20 h – 8 h le lendemain",T:"9 h – 16 h 42"};
+  function individualAgenda(s,person,all,roster) {
     const count={J:0,N:0,T:0};
+    let total=0;
     const list=all.map(day=>{
       const {code,label,a,unknown}=cellInfo(s,person.id,day);
-      if(Object.hasOwn(count,code)) count[code]++;
-      const tag=esc(person.name+", "+shortDay(day)+", "+label+(schedule[code]?", "+schedule[code]:""));
+      if(Object.hasOwn(count,code)) {
+        count[code]++;
+        total+=D.shiftMinutes(s,day,code);
+      }
+      const slot=shiftHours(s,day,code);
+      const tag=esc(person.name+", "+shortDay(day)+", "+label+(slot?", "+slot:""));
       const dayLabel=esc(dateFmt(day,{weekday:"short",day:"numeric",month:"short"}));
-      const slot=schedule[code]||"";
       const protection=a?.locked||a?.confirmed;
-      return '<li><button type="button" class="agenda-day'+(D.weekday(day)>4?" weekend":"")+'" data-act="cell" '+dataAtt("nurse",person.id)+' '+dataAtt("day",day)+' aria-label="'+tag+'"'+(proposal?' disabled':'')+'><span class="agenda-date">'+dayLabel+'</span><span class="agenda-label '+(unknown?"unassigned":code==="-"?"empty":code)+(protection?" locked":"")+'">'+esc(label)+'</span><span class="agenda-time">'+slot+'</span></button></li>';
+      return '<li><button type="button" class="agenda-day'+(D.weekday(day)>4?" weekend":"")+'" data-act="cell" '+dataAtt("nurse",person.id)+' '+dataAtt("day",day)+' aria-label="'+tag+'"'+(proposal || code==="X"?' disabled':'')+'><span class="agenda-date">'+dayLabel+'</span><span class="agenda-label '+(unknown?"unassigned":code==="-"?"empty":code)+(protection?" locked":"")+'">'+esc(label)+'</span><span class="agenda-time">'+slot+'</span></button></li>';
     }).join("");
-    const total=count.J*D.SHIFT_MINUTES.J+count.N*D.SHIFT_MINUTES.N+count.T*D.SHIFT_MINUTES.T;
     const csv=btn("csv-individual","Exporter le mois de cette IDE en CSV");
-    return '<div class="person-tools"><label class="field">IDE affichée<select id="individual-nurse">'+s.nurses.map(n=>opt(n.id,n.name,n.id===person.id)).join("")+'</select></label>'+csv+'</div><div class="person-summary"><strong>'+esc(D.formatMinutes(total))+' de postes</strong><span>'+count.J+' SMUR J</span><span>'+count.N+' SMUR N</span><span>'+count.T+' TIIH</span></div><ul class="agenda" aria-label="'+esc("Planning mensuel de "+person.name)+'">'+list+'</ul>';
+    return '<div class="person-tools"><label class="field">IDE affichée<select id="individual-nurse">'+nurseOptions(roster,person.id)+'</select></label>'+csv+'</div><div class="person-summary"><strong>'+esc(D.formatMinutes(total))+' de postes</strong><span>'+count.J+' SMUR J</span><span>'+count.N+' SMUR N</span><span>'+count.T+' TIIH</span></div><ul class="agenda" aria-label="'+esc("Planning mensuel de "+person.name)+'">'+list+'</ul>';
   }
   function showEditor(id,day) {
+    if(!state.nurses.some(n=>n.id===id && D.isActive(n,day))) throw Error("Cette IDE est hors effectif à cette date.");
     const {a}=cellInfo(state,id,day);
     const absent=D.absenceOn(state,id,day);
-    dialog.innerHTML='<form data-form="cell" '+dataAtt("nurse",id)+' '+dataAtt("day",day)+'><p class="caps">'+esc(shortDay(day))+'</p><h2 id="dialog-title">'+esc(nameOf(id))+'</h2><div class="fields"><label>Poste<select name="shift">'+["-","J","N","T"].map(c=>opt(c,D.SHIFT_LABELS[c],c===(a?.shift||"-"))).join("")+'</select></label></div>'+(absent?'<p class="hint">Une absence est enregistrée à cette date.</p>':"")+'<p><label><input type="checkbox" name="locked" '+(a?.locked?"checked":"")+'> Verrouiller le poste ou le repos</label></p><p><label><input type="checkbox" name="confirmed" '+(a?.confirmed?"checked":"")+'> Confirmer le poste réalisé</label></p><p role="alert" class="issueerror"></p><div class="actions">'+btn("close","Annuler")+submit("Enregistrer")+'</div></form>';
+    dialog.innerHTML='<form data-form="cell" '+dataAtt("nurse",id)+' '+dataAtt("day",day)+'><p class="caps">'+esc(shortDay(day))+'</p><h2 id="dialog-title">'+esc(nameOf(id))+'</h2><div class="fields"><label>Poste<select name="shift">'+["-","J","N","T"].map(c=>opt(c,D.SHIFT_LABELS[c]+(c==="T"?" · "+shiftHours(state,day,c):""),c===(a?.shift||"-"))).join("")+'</select></label></div>'+(absent?'<p class="hint">Une absence est enregistrée à cette date.</p>':"")+'<p><label><input type="checkbox" name="locked" '+(a?.locked?"checked":"")+'> Verrouiller le poste ou le repos</label></p><p><label><input type="checkbox" name="confirmed" '+(a?.confirmed?"checked":"")+'> Confirmer le poste réalisé</label></p><p role="alert" class="issueerror"></p><div class="actions">'+btn("close","Annuler")+submit("Enregistrer")+'</div></form>';
     dialog.showModal();
   }
   function absenceView() {
@@ -1342,31 +1981,85 @@
     const credits=old?Object.values(old.credits):[];
     const duration=(n)=>Math.floor(n/60)+":"+String(n%60).padStart(2,"0");
     const initialCredit=duration(old&&timed?credits.reduce((a,b)=>a+b,0):credits[0]??462);
-    return title("Absences")+ '<div class="cols"><section class="panel"><h2>'+(old?"Modifier l’absence":"Ajouter une absence")+'</h2><form data-form="absence"><div class="fields"><label>IDE<select name="nurse">'+nurseOptions(old?.nurse_id)+'</select></label><label>Motif<select name="kind">'+D.ABSENCE_KINDS.map(k=>opt(k,k,k===old?.kind)).join("")+'</select></label></div><label class="field">Type de saisie<select name="mode" id="absence-mode">'+opt("days","Journées entières",!timed)+opt("slot","Créneau horaire",timed)+'</select></label><div class="fields"><label>Du<input required type="date" name="from" value="'+first+'"></label><label>Au (inclus)<input required type="date" name="to" value="'+last+'"></label></div><div class="fields" id="times" style="'+(timed?"":"display:none")+'"><label>Heure de début<input type="time" required name="begin" value="'+(timed?old.start.slice(11,16):"09:00")+'"></label><label>Heure de fin<input type="time" required name="finish" value="'+(timed?old.end.slice(11,16):"11:00")+'"></label></div><div class="fields"><label><span id="credit-label">'+(timed?"Crédit total du créneau":"Crédit par jour du lundi au vendredi")+'</span><input name="credit" required value="'+initialCredit+'" placeholder="7:42" pattern="[0-9]{1,2}:[0-5][0-9]"></label></div><p class="hint">Une absence du vendredi au lundi bloque les quatre jours et crédite 15 h 24 par défaut.</p><div class="actions" style="margin-top:1rem">'+submit("Enregistrer l’absence")+(old?btn("cancel-absence","Annuler"):"")+'</div></form></section><section class="panel"><h2>Absences enregistrées</h2>'+(!state.absences.length?'<p class="mutedbox">Aucune absence enregistrée.</p>':state.absences.slice().sort((a,b)=>b.start.localeCompare(a.start)).map(a=>'<div class="listitem"><div><strong>'+esc(nameOf(a.nurse_id))+'</strong> · '+esc(a.kind)+'<small>Du '+esc(shortDay(a.start.slice(0,10)))+' à '+esc(a.start.slice(11,16))+' au '+esc(shortDay(a.end.slice(0,10)))+' à '+esc(a.end.slice(11,16))+' (fin exclusive)</small><small>Crédit '+esc(D.formatMinutes(Object.values(a.credits).reduce((x,y)=>x+y,0)))+'</small></div><div class="actions">'+btn("edit-absence","Modifier","mini",dataAtt("id",a.id))+btn("delete-absence","Supprimer","mini danger",dataAtt("id",a.id))+'</div></div>').join(""))+'</section></div>';
+    return title("Absences")+ '<div class="cols"><section class="panel"><h2>'+(old?"Modifier l’absence":"Ajouter une absence")+'</h2><form data-form="absence"><div class="fields"><label>IDE<select name="nurse">'+nurseOptions(rosterDuring(state,[first]),old?.nurse_id)+'</select></label><label>Motif<select name="kind">'+D.ABSENCE_KINDS.map(k=>opt(k,k,k===old?.kind)).join("")+'</select></label></div><label class="field">Type de saisie<select name="mode" id="absence-mode">'+opt("days","Journées entières",!timed)+opt("slot","Créneau horaire",timed)+'</select></label><div class="fields"><label>Du<input required type="date" name="from" value="'+first+'"></label><label>Au (inclus)<input required type="date" name="to" value="'+last+'"></label></div><div class="fields" id="times" style="'+(timed?"":"display:none")+'"><label>Heure de début<input type="time" required name="begin" value="'+(timed?old.start.slice(11,16):"09:00")+'"></label><label>Heure de fin<input type="time" required name="finish" value="'+(timed?old.end.slice(11,16):"11:00")+'"></label></div><div class="fields"><label><span id="credit-label">'+(timed?"Crédit total du créneau":"Crédit par jour du lundi au vendredi")+'</span><input name="credit" required value="'+initialCredit+'" placeholder="7:42" pattern="[0-9]{1,2}:[0-5][0-9]"></label></div><p class="hint">Une absence du vendredi au lundi bloque les quatre jours et crédite 15 h 24 par défaut.</p><div class="actions" style="margin-top:1rem">'+submit("Enregistrer l’absence")+(old?btn("cancel-absence","Annuler"):"")+'</div></form></section><section class="panel"><h2>Absences enregistrées</h2>'+(!state.absences.length?'<p class="mutedbox">Aucune absence enregistrée.</p>':state.absences.slice().sort((a,b)=>b.start.localeCompare(a.start)).map(a=>'<div class="listitem"><div><strong>'+esc(nameOf(a.nurse_id))+'</strong> · '+esc(a.kind)+'<small>Du '+esc(shortDay(a.start.slice(0,10)))+' à '+esc(a.start.slice(11,16))+' au '+esc(shortDay(a.end.slice(0,10)))+' à '+esc(a.end.slice(11,16))+' (fin exclusive)</small><small>Crédit '+esc(D.formatMinutes(Object.values(a.credits).reduce((x,y)=>x+y,0)))+'</small></div><div class="actions">'+btn("edit-absence","Modifier","mini",dataAtt("id",a.id))+btn("delete-absence","Supprimer","mini danger",dataAtt("id",a.id))+'</div></div>').join(""))+'</section></div>';
   }
   function tiihView() {
-    const all=days(), sources=new Set(all.filter(d=>D.defaultTiih(state,d)));
-    Object.entries(state.tiih_changes).forEach(([d,t])=>{if(d.startsWith(period)||t?.startsWith(period)) sources.add(d);});
-    const rows=[...sources].sort();
-    const defaults=rows[0]||all[0];
-    return title("Postes TIIH",picker())+'<div class="cols"><section class="panel"><h2>Adapter une journée</h2><p class="hint">Le TIIH est prévu de 9 h à 16 h 42 les mardis et vendredis hors jours fériés.</p><form data-form="tiih"><div class="fields"><label>Date d’origine<input required type="date" name="source" value="'+defaults+'"></label><label>Action<select name="operation" id="tiih-op">'+opt("cancel","Supprimer")+opt("move","Déplacer")+opt("restore","Restaurer")+'</select></label></div><div class="fields" id="target-row" style="display:none"><label>Nouvelle date<input type="date" name="target" value="'+D.addDays(defaults,1)+'"></label></div>'+submit("Appliquer au TIIH")+'</form></section><section class="panel"><h2>Postes du mois</h2><div class="scroll"><table><thead><tr><th>Origine</th><th>Date effective</th><th>État</th></tr></thead><tbody>'+rows.map(d=>{
-      const t=Object.hasOwn(state.tiih_changes,d)?state.tiih_changes[d]:d;
-      return '<tr><td>'+esc(shortDay(d))+'</td><td>'+esc(t?shortDay(t):"—")+'</td><td>'+(!t?"Supprimé":d===t?"Maintenu":"Déplacé")+'</td></tr>';
-    }).join("")+'</tbody></table></div></section></div>';
+    const all=days(), sources=new Set(all.filter(day=>D.defaultTiih(state,day)));
+    for(const [source,target] of Object.entries(state.tiih_changes)) {
+      if(source.startsWith(period)||target?.startsWith(period)) sources.add(source);
+    }
+    const rows=[...sources].sort(), source=rows.includes(editingTiih)?editingTiih:rows[0]||all[0];
+    const effective=D.tiihDay(state,source), minutes=D.getTiihDuration(state,source);
+    const list=rows.map(day=>{
+      const actual=D.tiihDay(state,day), length=D.getTiihDuration(state,day);
+      const status=!actual?"Supprimé":actual===day?"Prévu":"Déplacé";
+      return '<tr><th scope="row">'+esc(shortDay(day))+'</th><td>'+esc(actual?shortDay(actual):"—")+'</td><td>'+
+        esc(actual?tiihHours(actual,length):"—")+'</td><td class="countcell">'+esc(D.formatMinutes(length))+'</td><td>'+status+'</td><td>'+
+        btn("edit-tiih","Modifier","mini",dataAtt("source",day)+' aria-label="'+esc("Modifier le TIIH du "+shortDay(day))+'"')+'</td></tr>';
+    }).join("");
+    return title("Postes TIIH",picker())+`<div class="cols tiih-cols"><section class="panel"><h2>Adapter une journée</h2>
+      <p class="hint">Le TIIH est prévu le mardi, le jeudi et le vendredi, hors jours fériés. Il commence à 9 h et dure habituellement 7 h 42. Chaque modification porte sur une seule occurrence. Les deux postes SMUR restent obligatoires chaque jour.</p>
+      <form data-form="tiih"><div class="fields"><label>Date d’origine<input required type="date" id="tiih-source" name="source" value="${source}"></label></div>
+      <label class="field">Action<select name="operation" id="tiih-op">${opt("duration","Modifier la durée",Boolean(effective))}${opt("normal","Rétablir la durée de 7 h 42")}${opt("cancel","Supprimer")}${opt("move","Déplacer")}${opt("restore","Restaurer",!effective)}</select></label>
+      <div class="fields" id="duration-row"><label>Durée du TIIH (h:mm)<input name="duration" pattern="[0-9]{1,2}:[0-5][0-9]" value="${durationInput(minutes)}" placeholder="7:42"></label></div>
+      <div class="fields" id="target-row" hidden><label>Nouvelle date<input type="date" name="target" value="${nextFreeTiihDay(effective||source)}"></label></div>
+      <p id="tiih-help" class="hint" aria-live="polite"></p><div class="bottomaction">${submit("Appliquer au TIIH")}</div></form></section>
+      <section class="panel"><h2>Postes du mois</h2><div class="scroll"><table><thead><tr><th>Origine</th><th>Date effective</th><th>Horaires</th><th>Durée</th><th>État</th><th></th></tr></thead><tbody>${list}</tbody></table></div></section></div>`;
+  }
+  function nextFreeTiihDay(day) {
+    let target=D.addDays(day,1);
+    while(D.tiihRequired(state,target)||D.isHoliday(state,target)) target=D.addDays(target,1);
+    return target;
+  }
+  function syncTiih(form,sourceChanged=false) {
+    const source=form.elements.source.value;
+    if(!source) return;
+    const actual=D.tiihDay(state,source), minutes=D.getTiihDuration(state,source);
+    if(sourceChanged) {
+      form.elements.duration.value=durationInput(minutes);
+      form.elements.target.value=nextFreeTiihDay(actual||source);
+      form.elements.operation.value=actual?"duration":"restore";
+    }
+    const op=form.elements.operation.value, editDuration=op==="duration", moving=op==="move";
+    form.querySelector("#duration-row").hidden=!editDuration;
+    form.querySelector("#target-row").hidden=!moving;
+    form.elements.duration.disabled=!editDuration;
+    form.elements.target.disabled=!moving;
+    form.elements.duration.required=editDuration;
+    form.elements.target.required=moving;
+    const help=form.querySelector("#tiih-help");
+    if(editDuration) {
+      const value=form.elements.duration.value;
+      let text="Saisissez une durée de 0:01 à 48:00.";
+      if(/^\d{1,2}:[0-5]\d$/.test(value)) {
+        const m=D.parseDuration(value);
+        if(m>=1 && m<=2880) text="Horaires du poste le "+shortDay(actual||source)+" · "+tiihHours(actual||source,m)+".";
+      }
+      help.textContent=text;
+    } else {
+      help.textContent={normal:"Le poste reprendra les horaires de 9 h à 16 h 42.",move:"Le poste déplacé conserve sa durée de "+D.formatMinutes(minutes)+".",restore:"Le poste reprendra à sa date d’origine avec une durée de "+D.formatMinutes(minutes)+".",cancel:"Seul le TIIH de cette occurrence sera supprimé."}[op];
+    }
+  }
+  function teamRows(effective) {
+    const rows=state.nurses.map((n,i)=>{
+      if(!D.isActive(n,effective)) return "";
+      const quota=D.quotaOn(n,effective), base=D.baseQuotaOn(n,effective);
+      return `<tr><td><input maxlength="90" required class="tableinput" aria-label="Nom IDE ${i+1}" name="name-${i}" value="${esc(n.name)}"></td>
+        <td><input type="number" min="1" max="100" step="1" name="quota-${i}" aria-label="Quotité IDE ${i+1}" placeholder="À saisir" value="${esc(base)}"></td>
+        <td>${quota==null?"À saisir":quota+" %"}${(n.quota_periods||[]).some(p=>p.from<=effective && p.to>=effective)?" · temporaire":""}</td></tr>`;
+    }).join("");
+    return rows || '<tr><td colspan="3">Aucune IDE dans l’effectif à cette date.</td></tr>';
   }
   function teamView() {
-    const y=year(), effective=today.startsWith(period)?today:range()[0], oat=state.oat[String(y)];
-    const nurses=state.nurses.map((n,i)=>`<tr>
-      <td><input maxlength="90" required class="tableinput" aria-label="Nom IDE ${i+1}" name="name-${i}" value="${esc(n.name)}"></td>
-      <td><input type="number" min="1" max="100" step="1" name="quota-${i}" aria-label="Quotité IDE ${i+1}" placeholder="À saisir" value="${esc(D.quotaOn(n,effective))}"></td></tr>`).join("");
+    const y=year(), effective=teamDay||defaultDay(), oat=state.oat[String(y)];
     const phases=[["phase_min","Minimum"],["phase_target","Cible"],["phase_max","Maximum"]].map(([k,l])=>
       `<label>${l} (jours)<input type="number" min="14" max="21" step="1" required name="${k}" value="${state.settings[k]}"></label>`).join("");
     return title("Équipe et règles",picker())+`<div class="cols">
       <section class="panel"><h2>Quotités de l’équipe</h2><form data-form="team">
       <label class="field">Date d’effet des quotités<input type="date" required id="effective" name="effective" value="${effective}"></label>
       <div class="actions quota-tools">${btn("all-full","Mettre toute l’équipe à 100 %")}</div>
-      <div class="scroll"><table class="teamtbl"><thead><tr><th>IDE</th><th>Quotité (%)</th></tr></thead><tbody>${nurses}</tbody></table></div>
-      <p class="hint">Les modifications de quotité prennent effet à la date choisie.</p>
+      <div class="scroll"><table class="teamtbl"><thead><tr><th>IDE</th><th>Base (%)</th><th>Quotité appliquée</th></tr></thead><tbody>${teamRows(effective)}</tbody></table></div>
+      <p class="hint">La quotité de base prend effet à la date choisie. Une période temporaire a priorité jusqu’à son dernier jour inclus.</p>
       <div class="bottomaction">${submit("Enregistrer l’équipe")}</div></form></section>
       <section class="panel"><h2>Règles et objectif de ${y}</h2><form data-form="rules">
       <div class="fields"><label>OAT annuel pour un ETP (h:mm)<input name="oat" pattern="[0-9]{1,5}:[0-5][0-9]" placeholder="À renseigner" value="${oat?Math.floor(oat/60)+":"+String(oat%60).padStart(2,"0"):""}"></label></div>
@@ -1376,30 +2069,44 @@
       <div class="fields"><label>Jours fériés locaux supplémentaires<textarea name="holidays" rows="2" placeholder="Une date AAAA-MM-JJ par ligne">${esc(state.settings.extra_holidays.join("\n"))}</textarea></label></div>
       <h3>Organisation des séries</h3><ul class="rules-list">
       <li>44 h maximum du lundi au dimanche et 48 h sur toute période de 168 h.</li>
-      <li>Trois postes consécutifs maximum. Le planning privilégie les séries et vise au plus deux jours de repos entre elles. Les repos plus longs sont signalés.</li>
+      <li>Après trois dates de travail consécutives, les deux dates suivantes sont réservées au repos.</li>
       <li>Week-end de nuit du vendredi au dimanche. Week-end de jour le samedi et le dimanche, avec le vendredi de préférence. Le lundi qui suit, aucun poste de jour.</li>
-      </ul><div class="bottomaction">${submit("Enregistrer les règles")}</div></form></section></div>`;
+      </ul><div class="bottomaction">${submit("Enregistrer les règles")}</div></form></section></div><div id="team-management">${globalThis.PlannerTeamManagement.view(state,{day:effective})}</div>`;
+  }
+  function annualRows() {
+    const annualDays=D.dates(year()+"-01-01",year()+"-12-31");
+    const ids=new Set(rosterDuring(state,annualDays).map(n=>n.id));
+    return D.annualTotals(state,year()).filter(r=>ids.has(r.nurse_id));
   }
   function annualView() {
-    const rows=D.annualTotals(state,year());
+    const rows=annualRows();
     const cols=[["confirmed_minutes","Travail confirmé"],["planned_minutes","Planifié"],["absence_minutes","Absences"],["total_minutes","Total prévisionnel"],["target_minutes","Cible annuelle"],["remaining_minutes","Reste à planifier"]];
-    return title("Compteurs "+year(),picker())+'<section class="panel"><div class="panelhead"><div><h2>Suivi par IDE</h2><p class="subtle">Du 1ᵉʳ janvier au 31 décembre '+year()+'</p></div>'+btn("export-year","Exporter en CSV")+'</div>'+(!state.oat[String(year())]?'<aside class="notice"><p>Renseignez l’OAT pour afficher la cible de chaque IDE.</p>'+btn("page","Renseigner l’OAT","",dataAtt("page","team"))+'</aside>':"")+'<div class="scroll"><table><thead><tr><th>IDE</th>'+cols.map(([,l])=>'<th>'+l+'</th>').join("")+'</tr></thead><tbody>'+rows.map(r=>'<tr><th>'+esc(r.name)+'</th>'+cols.map(([k])=>'<td class="countcell">'+esc((k==="total_minutes"||k==="remaining_minutes")&&r.conflicts?"Conflit à corriger":D.formatMinutes(r[k]))+'</td>').join("")+'</tr>').join("")+'</tbody></table></div></section>';
+    return title("Compteurs "+year(),picker())+'<section class="panel"><div class="panelhead"><div><h2>Suivi par IDE</h2><p class="subtle">Du 1ᵉʳ janvier au 31 décembre '+year()+'. Les cibles tiennent compte des jours dans l’effectif et des quotités appliquées, périodes temporaires comprises.</p></div>'+btn("export-year","Exporter en CSV","",rows.length?"":"disabled")+'</div>'+(!state.oat[String(year())]?'<aside class="notice"><p>Renseignez l’OAT pour afficher la cible de chaque IDE.</p>'+btn("page","Renseigner l’OAT","",dataAtt("page","team"))+'</aside>':"")+'<div class="scroll"><table><thead><tr><th>IDE</th>'+cols.map(([,l])=>'<th>'+l+'</th>').join("")+'</tr></thead><tbody>'+(rows.length?"":'<tr><td colspan="7">Aucune IDE dans l’effectif sur cette année.</td></tr>')+rows.map(r=>'<tr><th>'+esc(r.name)+'</th>'+cols.map(([k])=>'<td class="countcell">'+esc((k==="total_minutes"||k==="remaining_minutes")&&r.conflicts?"Conflit à corriger":D.formatMinutes(r[k]))+'</td>').join("")+'</tr>').join("")+'</tbody></table></div></section>';
   }
   function phaseView() {
-    return '<details class="panel"><summary>Consulter ou préciser une période de jour ou de nuit</summary><form data-form="phase"><div class="fields"><label>IDE<select name="nurse">'+nurseOptions(state.nurses[0].id)+'</select></label><label>Date<input required type="date" name="anchor" value="'+D.addDays(range()[0],-1)+'"></label></div><div class="fields"><label>Régime<select name="mode">'+opt("","Inconnu")+opt("J","Jour")+opt("N","Nuit")+'</select></label><label>Jour de la période<input required type="number" min="1" max="60" name="age" value="1"></label></div><p class="hint">Un point de départ renseigné est conservé lors des générations suivantes. Les jours de repos comptent dans la période.</p><div class="bottomaction">'+submit("Enregistrer le régime")+'</div></form></details>';
+    return '<details class="panel"><summary>Consulter ou préciser une période de jour ou de nuit</summary><form data-form="phase"><div class="fields"><label>IDE<select name="nurse">'+nurseOptions(rosterDuring(state,[D.addDays(range()[0],-1)]))+'</select></label><label>Date<input required type="date" name="anchor" value="'+D.addDays(range()[0],-1)+'"></label></div><div class="fields"><label>Régime<select name="mode">'+opt("","Inconnu")+opt("J","Jour")+opt("N","Nuit")+'</select></label><label>Jour de la période<input required type="number" min="1" max="60" name="age" value="1"></label></div><p class="hint">Un point de départ renseigné est conservé lors des générations suivantes. Les jours de repos comptent dans la période.</p><div class="bottomaction">'+submit("Enregistrer le régime")+'</div></form></details>';
+  }
+  function syncDatedNurses(form,day,selected) {
+    const select=form.elements.nurse, roster=day?rosterDuring(state,[day]):[];
+    const archived=selected && !roster.some(n=>n.id===selected);
+    const options=nurseOptions(roster,selected||select.value);
+    select.innerHTML=archived?opt(selected,nameOf(selected)+" · hors effectif",true)+options:options||opt("","Aucune IDE à cette date");
+    select.disabled=!roster.length;
+    form.querySelector('[type=submit]').disabled=!roster.some(n=>n.id===select.value);
   }
   function syncPhase() {
     const form=main.querySelector('form[data-form=phase]');
     if(!form) return;
+    syncDatedNurses(form,form.elements.anchor.value);
     const p=state.phases[form.elements.anchor.value]?.[form.elements.nurse.value];
     form.elements.mode.value=p?.mode||"";
     form.elements.age.value=p?.age||1;
   }
   function filesView() {
-    return title("Imports et exports")+'<div class="cols"><section class="panel"><h2>Exporter une sauvegarde complète</h2><p>Le JSON conserve les contrats, les postes, les protections, les absences, leurs crédits et les règles. Utilisez-le pour reprendre le planning sur un autre appareil.</p><div class="fields">'+btn("export","Télécharger une sauvegarde JSON","primary")+(broken?btn("raw","Télécharger la sauvegarde illisible"):"")+'</div></section><section class="panel"><h2>Restaurer une sauvegarde complète</h2><p>Examinez le fichier JSON de Planning IDE avant de remplacer les données de cet espace.</p><form data-form="import"><div class="fields"><label>Sauvegarde JSON<input type="file" required name="backup" accept=".json,application/json"></label></div>'+submit("Examiner la sauvegarde")+'</form></section></div>';
+    return title("Imports et exports")+(!cloud?'<p class="sheets-guide">Pour ouvrir le même planning sur plusieurs ordinateurs, <a href="https://github.com/guillaumeferraro-gif/planning-equipe#google-sheets" target="_blank" rel="noopener noreferrer">installer le planning dans Google Sheets</a>.</p>':"")+'<div class="cols"><section class="panel"><h2>Exporter une sauvegarde complète</h2><p>Le JSON conserve les contrats, les postes, les dates et durées des TIIH, les protections, les absences, leurs crédits et les règles. Utilisez-le pour reprendre le planning sur un autre appareil.</p><div class="fields">'+btn("export","Télécharger une sauvegarde JSON","primary")+(broken?btn("raw","Télécharger la sauvegarde illisible"):"")+'</div></section><section class="panel"><h2>Restaurer une sauvegarde complète</h2><p>Examinez le fichier JSON de Planning IDE avant de remplacer les données de cet espace.</p><form data-form="import"><div class="fields"><label>Sauvegarde JSON<input type="file" required name="backup" accept=".json,application/json"></label></div>'+submit("Examiner la sauvegarde")+'</form></section></div>';
   }
   function legacyView() {
-    return '<section class="panel"><h2>Ajouter un historique mensuel</h2><p>Choisissez les fichiers <strong>planning_AAAA_MM.json</strong> de l’ancienne application ou les <strong>CSV mensuels exportés par Planning IDE</strong>. Les postes s’ajoutent à l’historique utilisé pour équilibrer les prochains mois.</p><p class="hint">Le CSV reprend les postes et les repos. Une sauvegarde JSON complète contient aussi les absences détaillées, les crédits, les contrats et les protections.</p><form data-form="legacy"><div class="fields"><label>Fichiers mensuels JSON ou CSV<input type="file" required multiple name="months" accept=".json,.csv,application/json,text/csv"></label></div>'+submit("Examiner les anciens plannings")+'</form></section>';
+    return '<section class="panel"><h2>Ajouter un historique mensuel</h2><p>Choisissez les fichiers <strong>planning_AAAA_MM.json</strong> de l’ancienne application ou les <strong>CSV mensuels exportés par Planning IDE</strong>. Les postes s’ajoutent à l’historique utilisé pour équilibrer les prochains mois.</p><p class="hint">Le CSV reprend les postes affectés, les durées des TIIH affectés et les repos. Une sauvegarde JSON complète contient aussi les absences détaillées, les crédits, les contrats et les protections.</p><form data-form="legacy"><div class="fields"><label>Fichiers mensuels JSON ou CSV<input type="file" required multiple name="months" accept=".json,.csv,application/json,text/csv"></label></div>'+submit("Examiner les anciens plannings")+'</form></section>';
   }
   function download(name,body,type) {
     const url=URL.createObjectURL(new Blob([body],{type}));
@@ -1421,7 +2128,7 @@
     if(!dialog.open) dialog.showModal();
   }
   function importQuotaField() {
-    return '<div class="fields"><label>Passer toute l’équipe à 100 % à compter du <small>(facultatif)</small><input type="date" id="import-effective" min="1900-01-01" max="2199-12-31" aria-describedby="import-effective-hint"></label></div><p id="import-effective-hint" class="hint">Laissez la date vide pour reprendre les contrats tels quels. Si vous indiquez une date, le taux de 100 % s’appliquera jusqu’au prochain changement déjà prévu pour chaque IDE. Vous pourrez aussi modifier les quotités dans Équipe et règles.</p>';
+    return '<div class="fields"><label>Passer toute l’équipe à 100 % à compter du <small>(facultatif)</small><input type="date" id="import-effective" min="1900-01-01" max="2199-12-31" aria-describedby="import-effective-hint"></label></div><p id="import-effective-hint" class="hint">Laissez la date vide pour reprendre les contrats tels quels. Si vous indiquez une date, la base des IDE en activité sera fixée à 100 % jusqu’au prochain changement prévu. Les périodes temporaires continuent de s’appliquer. Vous pourrez modifier les quotités dans Équipe et règles.</p>';
   }
   function prepareHistory(files) {
     const names=new Set();
@@ -1462,15 +2169,19 @@
     showImportDialog('<h2 id="dialog-title">Importer cet historique ?</h2><p>'+files.length+' fichier(s) · '+result.state.nurses.length+' IDE dans l’équipe après import.</p><ul>'+warnings.map(text=>'<li>'+esc(text)+'</li>').join("")+'</ul>'+importQuotaField()+'<p role="alert" class="issueerror"></p><div class="actions">'+btn("close","Annuler")+btn("restore-data","Importer les plannings","primary")+'</div>');
   }
   async function submitForm(form) {
+    if(form.dataset.form==="team-management") {
+      await globalThis.PlannerTeamManagement.submit(form,{state,save,dialog,render}); return;
+    }
     const f=new FormData(form), get=k=>String(f.get(k)??"");
     const candidate=clone(state);
     switch(form.dataset.form) {
       case "cell": {
         const {nurse:id,day}=form.dataset;
+        if(!candidate.nurses.some(n=>n.id===id && D.isActive(n,day))) throw Error("Cette IDE est hors effectif à cette date.");
         const prev=candidate.assignments[day]?.[id];
         const shift=get("shift"), confirmed=f.has("confirmed"), locked=f.has("locked");
         if((prev?.confirmed||prev?.locked)&&prev.shift!==shift) throw Error("Retirez la protection et enregistrez avant de modifier ce poste.");
-        if(confirmed&&(shift==="-"||D.shiftInterval(day,shift,"elapsed")[1]>Date.now()/60000)) throw Error("Seul un poste terminé peut être confirmé.");
+        if(confirmed&&(shift==="-"||D.shiftInterval(day,shift,"elapsed",candidate)[1]>Date.now()/60000)) throw Error("Seul un poste terminé peut être confirmé.");
         if(!candidate.assignments[day]) candidate.assignments[day]={};
         candidate.assignments[day][id]={shift,locked,confirmed};
         candidate.reviewed[day]=[...new Set([...(candidate.reviewed[day]||[]),id])];
@@ -1479,11 +2190,12 @@
       case "team": {
         const effective=get("effective");
         candidate.nurses.forEach((n,i)=>{
+          if(!D.isActive(n,effective)) return;
           const name=get("name-"+i).trim(), raw=get("quota-"+i);
           if(!name) throw Error("Chaque IDE doit avoir un nom.");
           const quota=raw===""?null:Number(raw);
           n.name=name;
-          if(quota!==D.quotaOn(n,effective)) D.setContract(n,effective,quota);
+          if(quota!==D.baseQuotaOn(n,effective)) D.setContract(n,effective,quota);
         });
         if(new Set(candidate.nurses.map(n=>n.name)).size!==candidate.nurses.length) throw Error("Choisissez un nom distinct pour chaque IDE.");
         save(candidate,"Équipe enregistrée."); break;
@@ -1497,19 +2209,32 @@
       case "absence": {
         const day=get("from"), end=get("to"), slot=get("mode")==="slot", credit=D.parseDuration(get("credit"));
         if(day>end) throw Error("La fin doit suivre le début de l’absence.");
+        const nurse=candidate.nurses.find(n=>n.id===get("nurse"));
+        if(!nurse || !D.isActive(nurse,day) || !D.isActive(nurse,slot && get("finish")==="00:00"?D.addDays(end,-1):end))
+          throw Error("Les dates de l’absence doivent être comprises dans la période d’activité de cette IDE.");
         const fields={nurse_id:get("nurse"),kind:get("kind"),start:slot?day+"T"+get("begin"):day,end:slot?end+"T"+get("finish"):D.addDays(end,1)};
         if(slot) fields.credits={[day]:credit}; else fields.daily_minutes=credit;
         if(absenceId) fields.id=absenceId;
         D.setAbsence(candidate,fields); save(candidate,"Absence enregistrée."); absenceId=""; render(); break;
       }
       case "tiih": {
-        const op=get("operation");
-        if(op==="move"&&!get("target")) throw Error("Choisissez la nouvelle date.");
-        D.changeTiih(candidate,get("source"),op==="move"?get("target"):null,op==="restore");
-        save(candidate,"Poste TIIH mis à jour. Les affectations peuvent maintenant être ajustées."); break;
+        const op=get("operation"), source=get("source");
+        if(op==="duration" || op==="normal") {
+          const day=D.tiihDay(candidate,source);
+          if(!day) throw Error("Restaurez le TIIH de cette date avant d’en modifier la durée.");
+          const minutes=op==="normal"?D.SHIFT_MINUTES.T:D.parseDuration(get("duration"));
+          D.setTiihDuration(candidate,day,minutes);
+        } else {
+          if(op==="move" && !get("target")) throw Error("Choisissez la nouvelle date.");
+          D.changeTiih(candidate,source,op==="move"?get("target"):null,op==="restore");
+        }
+        editingTiih=source;
+        save(candidate,"TIIH du "+shortDay(source)+" mis à jour."); break;
       }
       case "phase": {
         const day=get("anchor"), id=get("nurse"), mode=get("mode");
+        const nurse=candidate.nurses.find(n=>n.id===id);
+        if(!nurse || !D.isActive(nurse,day)) throw Error("Choisissez une IDE dans l’effectif à la date de la période.");
         if(mode) {
           if(!candidate.phases[day]) candidate.phases[day]={};
           candidate.phases[day][id]={mode,age:Number(get("age")),locked:true};
@@ -1552,6 +2277,9 @@
   async function act(button) {
     const action=button.dataset.act;
     if(busy) return;
+    if(action==="team-manage") {
+      await globalThis.PlannerTeamManagement.action(button,{state,save,dialog,render}); return;
+    }
     if(action==="generate") {
       busy=true; button.disabled=true; button.textContent="Recherche en cours…";
       try {
@@ -1562,6 +2290,24 @@
       return;
     }
     switch(action) {
+      case "cloud-read": {
+        if(cloudActive()) await cloud.read({force:!state});
+        break;
+      }
+      case "cloud-draft": {
+        if(cloudActive() && state) download("planning-ide-brouillon-"+today+".json",JSON.stringify(state,null,2),"application/json");
+        break;
+      }
+      case "cloud-retry": if(cloudActive()) await cloud.retry(); break;
+      case "cloud-reload": {
+        if(!cloudActive()) break;
+        dialog.innerHTML='<h2 id="dialog-title">Recharger la version partagée ?</h2><p>La version du classeur remplacera le brouillon affiché. Vous pouvez en télécharger une copie avant de continuer.</p><p class="issueerror" role="alert"></p><div class="actions">'+btn("close","Annuler")+btn("cloud-draft","Exporter mon brouillon JSON")+btn("cloud-discard","Abandonner le brouillon et recharger","primary")+'</div>';
+        dialog.showModal(); break;
+      }
+      case "cloud-discard": {
+        if(!cloudActive()) break;
+        dialog.close(); await cloud.read({force:true,discard:true}); break;
+      }
       case "page": page=button.dataset.page; notify(); render(); break;
       case "prev": setPeriod(D.addDays(range()[0],-1).slice(0,7)); break;
       case "next": setPeriod(D.addDays(range()[1],1).slice(0,7)); break;
@@ -1569,8 +2315,8 @@
       case "week": week=Number(button.dataset.week); render(); break;
       case "all-full": {
         const form=button.closest("form");
-        state.nurses.forEach((n,i)=>{form.elements["quota-"+i].value="100";});
-        notify("Les quotités sont prêtes. Enregistrez l’équipe pour appliquer la date d’effet choisie.");
+        form.querySelectorAll('input[name^="quota-"]').forEach(input=>{input.value="100";});
+        notify("Les quotités de base sont prêtes. Enregistrez l’équipe pour appliquer la date d’effet choisie.");
         break;
       }
       case "demo": switchSpace(true); break;
@@ -1579,6 +2325,11 @@
       case "discard": proposal=null; notify("Proposition écartée."); render(); break;
       case "cell": showEditor(button.dataset.nurse,button.dataset.day); break;
       case "close": dialog.close(); stagedImport=null; break;
+      case "edit-tiih": {
+        editingTiih=button.dataset.source; render();
+        main.querySelector("#tiih-op").focus();
+        break;
+      }
       case "edit-absence": absenceId=button.dataset.id; render(); break;
       case "cancel-absence": absenceId=""; render(); break;
       case "delete-absence": {
@@ -1601,6 +2352,7 @@
         if(effective) {
           const placeholders=new Set(stagedImport.placeholderContractIds);
           for(const nurse of restored.nurses) {
+            if(!D.isActive(nurse,effective)) continue;
             // These new identities have only the default contract of the template slot.
             if(placeholders.has(nurse.id)) nurse.contracts=[];
             D.setContract(nurse,effective,100);
@@ -1614,9 +2366,13 @@
       case "csv-individual": {
         const value=proposal?.candidate||state, all=days();
         const one=action==="csv-individual";
-        const nurses=one?value.nurses.filter(n=>n.id===selectedNurseId):value.nurses;
+        const roster=rosterDuring(value,all), nurses=one?roster.filter(n=>n.id===selectedNurseId):roster;
+        if(!nurses.length) throw Error("Aucune IDE dans l’effectif sur ce mois.");
         const suffix=one?"-"+nurses[0].name.replace(/[^\p{L}\p{N}]+/gu,"-").slice(0,60):"";
-        csv("planning-"+period+suffix+".csv",[["IDE",...all],...nurses.map(n=>[n.name,...all.map(d=>cellInfo(value,n.id,d).label)])]);
+        csv("planning-"+period+suffix+".csv",[["IDE",...all],...nurses.map(n=>[n.name,...all.map(d=>{
+          const {code,label}=cellInfo(value,n.id,d);
+          return globalThis.PlannerCSV.shiftLabel(value,d,code,label);
+        })])]);
         break;
       }
       case "export-balance": {
@@ -1628,7 +2384,7 @@
         break;
       }
       case "export-year": {
-        const rows=D.annualTotals(state,year());
+        const rows=annualRows();
         csv("compteurs-"+year()+".csv",[["IDE","Confirmé (min)","Planifié (min)","Absences (min)","Total (min)","Cible (min)","Reste (min)","Conflits"],...rows.map(r=>[r.name,r.confirmed_minutes,r.planned_minutes,r.absence_minutes,r.total_minutes,r.target_minutes,r.remaining_minutes,r.conflicts])]); break;
       }
     }
@@ -1636,14 +2392,30 @@
   dialog.addEventListener("close",()=>{stagedImport=null;historyFiles=null;historyNames=[];});
   document.addEventListener("click",e=>{const b=e.target.closest("button[data-act]"); if(b) act(b).catch(infoError);});
   document.addEventListener("submit",e=>{if(e.target.dataset.form){e.preventDefault();submitForm(e.target).catch(infoError);}});
+  document.addEventListener("input",e=>{
+    const t=e.target;
+    if(t.form && !dialog.contains(t)) formEdited=true;
+    if(t.name==="duration" && t.form?.dataset.form==="tiih") syncTiih(t.form);
+  });
   document.addEventListener("change",e=>{
     try {
       const t=e.target;
+      if(t.form && !dialog.contains(t)) formEdited=true;
+      if(t.form?.dataset.form==="absence" && ["from","nurse"].includes(t.name)) {
+        const form=t.form;
+        const edited=state.absences.find(a=>a.id===absenceId);
+        const keep=edited && form.elements.nurse.value===edited.nurse_id?edited.nurse_id:null;
+        syncDatedNurses(form,form.elements.from.value,keep);
+      }
       if(t.form?.dataset.form==="phase" && ["anchor","nurse"].includes(t.name)) syncPhase();
       if(t.id==="period"&&t.value) setPeriod(t.value);
       if(t.id==="individual-nurse") {selectedNurseId=t.value; render();}
-      if(t.id==="effective"&&t.value) state.nurses.forEach((n,i)=>{t.form.elements["quota-"+i].value=D.quotaOn(n,t.value)??"";});
-      if(t.id==="tiih-op") {document.getElementById("target-row").style.display=t.value==="move"?"":"none"; t.form.elements.target.required=t.value==="move";}
+      if(t.id==="effective"&&t.value) {
+        teamDay=t.value;
+        t.form.querySelector("tbody").innerHTML=teamRows(teamDay);
+        main.querySelector("#team-management").innerHTML=globalThis.PlannerTeamManagement.view(state,{day:teamDay});
+      }
+      if(t.id==="tiih-op"||t.id==="tiih-source") syncTiih(t.form,t.id==="tiih-source");
       if(t.id==="absence-mode") {
         const slot=t.value==="slot"; document.getElementById("times").style.display=slot?"":"none";
         document.getElementById("credit-label").textContent=slot?"Crédit total du créneau":"Crédit par jour du lundi au vendredi";
@@ -1651,10 +2423,25 @@
       }
     } catch(err) {infoError(err);}
   });
-  window.addEventListener("storage",e=>{if(e.key===key() || e.key===null) notify("Une autre fenêtre a modifié les données. Rechargez cette page avant d’enregistrer.",true);});
-  load();
-  if(!storageAvailable) notify("L’enregistrement automatique est indisponible dans ce navigateur. Exportez une sauvegarde JSON avant de fermer la page.",true);
-  render();
+  window.addEventListener("storage",e=>{if(!cloudActive() && (e.key===key() || e.key===null)) notify("Une autre fenêtre a modifié les données. Rechargez cette page avant d’enregistrer.",true);});
+  const bridge=globalThis.google?.script?.run;
+  if(bridge) {
+    cloud=globalThis.PlannerSheetsSync.connect(bridge,{
+      active:()=>!demo,
+      canRefresh:()=>!demo && !dialog.open && !proposal && !busy && !formEdited,
+      prepare:body=>body===null?D.newState(Number(today.slice(0,4))):D.migrateState(JSON.parse(body)),
+      receive:value=>{state=value;proposal=null;absenceId="";notify();render();},
+      changed:syncStatus,
+      saved:(message,warning)=>{if(!demo) notify(message+" Enregistré dans Google Sheets."+(warning?" "+warning:""));}
+    });
+    const refresh=()=>{if(cloudActive() && state && !document.hidden) void cloud.read();};
+    window.addEventListener("focus",refresh);
+    document.addEventListener("visibilitychange",refresh);
+    window.addEventListener("beforeunload",e=>{
+      if(cloudActive() && cloud.pending) {e.preventDefault();e.returnValue="";}
+    });
+  }
+  openSpace();
 })();
 
 </script>
