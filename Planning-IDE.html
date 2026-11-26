@@ -11,6 +11,10 @@
 @media(max-width:850px){.cols{grid-template-columns:1fr}.nav button{padding:.55rem .6rem}.metric{padding:.8rem;gap:.4rem;flex-wrap:wrap}.metric .value{font-size:1.3rem}.grid th:first-child{width:95px}.wrap{padding-inline:16px}.brandbar{padding-inline:16px}.pagehead{margin-top:1.3rem}}
 @media(max-width:580px){.metricgrid{gap:5px}.metric{display:block;text-align:center}.metric .swatch{display:none}.metric small{display:block;font-size:.72rem}.metric .value{margin-top:.4rem}.metric .value small{display:inline}.brandbar small{font-size:.72rem}.panel{padding:.8rem}.grid{min-width:620px}.nav{gap:0}.nav button{font-size:.86rem}.pagehead .actions{width:100%}.notice .actions{flex-wrap:wrap}.fields>label{min-width:110px}}
 @media print{.brandbar,.nav,.monthnav,.actions,.weekbar,.notice,.status,dialog,.bottomaction{display:none!important}.panel,.metric{break-inside:avoid}.wrap{padding:0}.scroll{overflow:visible}}
+.grid .cell:disabled{opacity:1}.balance table{min-width:635px}.balance th,.balance td{text-align:center;font-variant-numeric:tabular-nums}.balance tbody th,.balance thead th[rowspan]{text-align:left;position:sticky;left:0;background:white;z-index:1}.balance thead th[rowspan]{background:#f5f7f4}.balance thead th[scope=colgroup],.balance td:nth-child(2),.balance td:nth-child(4),.balance td:nth-child(7),.balance td:nth-child(9){border-left:1px solid var(--line)}.balance .hint{margin-top:.8rem}.rules-list{padding-left:1.2rem;font-size:.9rem}.rules-list li+li{margin-top:.4rem}.quota-tools{margin:.65rem 0}.teamtbl+.hint{margin-top:.6rem}dialog form>p,dialog form>.scroll{margin-top:.7rem}dialog .scroll{max-height:50vh}dialog form select{max-width:12rem}
+.viewbar{border:1px solid var(--line);border-radius:9px;padding:3px}.viewbar button{border-color:transparent;padding:.42rem .85rem}.date-range{margin-bottom:.85rem}.grid.full-grid{min-width:1030px}.full-grid th:first-child{width:96px}.full-grid thead th{font-size:.73rem}.full-grid thead span{font-size:.92rem}.full-grid td,.full-grid th{padding:.24rem .09rem}.full-grid .cell{font-size:.82rem;min-height:27px}.grid .unassigned,.agenda .unassigned{background:transparent;color:#647879;font-weight:400}.person-tools{display:flex;align-items:end;justify-content:space-between;gap:.7rem;flex-wrap:wrap}.person-tools select{min-width:150px}.person-summary{display:flex;gap:.45rem 1rem;padding:.65rem .8rem;margin:.85rem 0;background:#f0f5f1;border-radius:6px;flex-wrap:wrap;font-size:.9rem}.agenda{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));grid-template-rows:repeat(16,auto);grid-auto-flow:column;gap:0 1.4rem}.agenda-day{display:grid;align-items:center;grid-template-columns:6.2rem minmax(5.6rem,.7fr) minmax(6rem,1fr);gap:.45rem;width:100%;text-align:left;font-size:.84rem;background:#fff;border:1px solid transparent;border-bottom-color:var(--line);border-radius:0;padding:.45rem .3rem}.agenda-day.weekend{background:#f5f7f5}.agenda-day:disabled{opacity:1}.agenda-day .agenda-date{font-variant-numeric:tabular-nums}.agenda-label{justify-self:start;border-radius:4px;padding:.16rem .36rem;font-weight:600}.agenda-label.empty,.agenda-time{color:var(--muted);font-weight:400}.agenda-day:not(:disabled):hover{border-color:var(--teal);background:#eef6f1}.agenda-time{line-height:1.3}
+@media(max-width:960px){.agenda{display:block}.agenda-day{grid-template-columns:minmax(6rem,.75fr) minmax(6rem,.7fr) minmax(6rem,1fr)}}
+@media(max-width:580px){.agenda-day{gap:.2rem;grid-template-columns:5.2rem minmax(4.8rem,.85fr) minmax(5rem,1fr)}.person-tools{align-items:start;flex-direction:column}.person-tools button{font-size:.83rem}.grid.full-grid{min-width:1020px}}
 </style>
 </head>
 <body>
@@ -86,12 +90,34 @@
     return Number(match[1]) * 60 + Number(match[2]);
   }
   function newState(year = Number(paris.formatToParts(new Date()).find(p => p.type === "year").value)) {
-    return {schema_version: 2, revision: 0, nurses: [80,80,100,null,null,null,null].map((q,i) => ({
+    return {schema_version: 2, revision: 0, nurses: Array.from({length:7},(_,i) => ({
       id: "ide-" + String.fromCharCode(97+i), name: "IDE " + String.fromCharCode(65+i),
-      contracts: [{from: year + "-01-01", percent: q}]
-    })), assignments: {}, phases: {}, reviewed: {}, absences: [], tiih_changes: {}, oat: {},
+      contracts: [{from: year + "-01-01", percent: 100}]
+    })), assignments: {}, phases: {}, reviewed: {}, absences: [], tiih_changes: {}, oat: {"2026":1560*60},
     settings: {timezone: "Europe/Paris", rest_clock: "wall", phase_min: 14, phase_target: 15,
-      phase_max: 16, extra_holidays: []}};
+      phase_max: 21, day_phase_min: 14, day_phase_target: 15, day_phase_max: 16,
+      rules_version: 2, rest_gap_mode: "prefer", extra_holidays: []}};
+  }
+  function migrateState(input) {
+    validateState(input);
+    const state=JSON.parse(JSON.stringify(input));
+    const settings=state.settings;
+    settings.rest_gap_mode="prefer";
+    if (settings.rules_version===2) return state;
+    state.oat["2026"]=1560*60;
+    settings.day_phase_min=settings.phase_min;
+    settings.day_phase_target=settings.phase_target;
+    settings.day_phase_max=settings.phase_max;
+    settings.phase_min=14;
+    settings.phase_target=Math.max(14,Math.min(21,settings.phase_target));
+    settings.phase_max=21;
+    settings.rules_version=2;
+    return state;
+  }
+  function phaseBounds(settings,mode) {
+    if (mode==="N" || settings.rules_version!==2)
+      return {min:settings.phase_min,target:settings.phase_target,max:settings.phase_max};
+    return {min:settings.day_phase_min??14,target:settings.day_phase_target??15,max:settings.day_phase_max??16};
   }
   function quotaOn(nurse, day) {
     let latest;
@@ -124,7 +150,7 @@
     return holidaysByYear.get(y).has(day) || state.settings.extra_holidays.includes(day);
   }
   function defaultTiih(state, day) {
-    return [1,3,4].includes(weekday(day)) && !isHoliday(state,day);
+    return [1,4].includes(weekday(day)) && !isHoliday(state,day);
   }
   function tiihRequired(state, day) {
     if (Object.values(state.tiih_changes).includes(day)) return true;
@@ -191,6 +217,10 @@
     if (shiftCache.size > 20000) shiftCache.clear();
     shiftCache.set(key,result);
     return result;
+  }
+  function calendarWeekBounds(day) {
+    const monday=addDays(day,-weekday(day));
+    return [localEpoch(monday,0),localEpoch(addDays(monday,7),0)];
   }
   function moment(text) {
     const m = typeof text === "string" && /^(\d{4}-\d{2}-\d{2})(?:T(\d{2}):(\d{2})(?::00(?:\.0{1,6})?)?(Z|[+-]\d{2}:\d{2})?)?$/.exec(text);
@@ -273,9 +303,17 @@
       }
     }
     const s=state.settings;
+    requireValue(s.rules_version===undefined || s.rules_version===1 || s.rules_version===2,
+      "Cette sauvegarde utilise une version plus récente des règles.");
     requireValue(s.timezone==="Europe/Paris" && [null,"wall","elapsed"].includes(s.rest_clock) &&
       integer(s.phase_min,2,60) && integer(s.phase_target,s.phase_min,60) &&
       integer(s.phase_max,s.phase_target,60) && Array.isArray(s.extra_holidays),"Paramètres de planification invalides.");
+    requireValue([undefined,"strict","prefer"].includes(s.rest_gap_mode),"Mode de gestion des repos invalide.");
+    if (s.rules_version===2) requireValue(s.phase_min>=14 && s.phase_max<=21,
+      "Les périodes de nuit doivent rester comprises entre 14 et 21 jours.");
+    const dayPhase=phaseBounds(s,"J");
+    requireValue(integer(dayPhase.min,2,60) && integer(dayPhase.target,dayPhase.min,60) &&
+      integer(dayPhase.max,dayPhase.target,60),"Paramètres de période de jour invalides.");
     for (const d of s.extra_holidays) serial(d);
     for (const [year,m] of Object.entries(state.oat))
       requireValue(/^\d{4}$/.test(year) && integer(m,1,366*1440),"OAT annuel invalide.");
@@ -347,6 +385,28 @@
         reviewed_days:calendar.filter(d=>state.reviewed[d]?.includes(n.id)).length};
     });
   }
+  // Only count a run bounded by an actual duty at each end. A missing day
+  // or an absence interrupts the evidence for a run of rostered rest days.
+  function restGaps(state,nid,start,end) {
+    const ordered=Object.keys(state.assignments).filter(d=>{
+      const a=state.assignments[d]?.[nid];
+      return a && a.shift!=="-";
+    }).sort();
+    const gaps=[];
+    for (let i=1;i<ordered.length;i++) {
+      const before=ordered[i-1],after=ordered[i];
+      const days=serial(after)-serial(before)-1;
+      if (days<=2 || after<start || before>end) continue;
+      const first=addDays(before,1),last=addDays(after,-1);
+      let known=true;
+      for (let d=first;d<=last;d=addDays(d,1)) {
+        if ((!Object.hasOwn(state.assignments[d]||{},nid) && !state.reviewed[d]?.includes(nid)) ||
+            absenceOn(state,nid,d)) { known=false; break; }
+      }
+      if (known) gaps.push({start:first,end:last,days});
+    }
+    return gaps;
+  }
   function validateSchedule(state,start,end,coverage=true) {
     const issues=[];
     function issue(code,message,day=null,nid=null,severity="error") {
@@ -354,6 +414,12 @@
     }
     const monthDays=dates(start,end), contextDays=dates(addDays(start,-8),addDays(end,8));
     const scopeStart=localEpoch(start,0),scopeEnd=localEpoch(addDays(end,1),0);
+    const weekStarts=[...new Set(monthDays.map(d=>addDays(d,-weekday(d))))];
+    // A Sunday night can also increase the following week's work. Include its
+    // Monday even when the selected range ends on Sunday evening.
+    if (weekday(end)===6 && Object.values(state.assignments[end]||{}).some(a=>a.shift==="N"))
+      weekStarts.push(addDays(end,1));
+    const weeks=weekStarts.map(d=>({date:d,interval:calendarWeekBounds(d)}));
     const prior=dates(addDays(start,-8),addDays(start,-1)),following=dates(addDays(end,1),addDays(end,8));
     for (const [range,code,title] of [[prior,"history","Historique précédent"],[following,"future","Mois suivant"]]) {
       if (range.some(d=>state.nurses.some(n=>!state.reviewed[d]?.includes(n.id))))
@@ -398,6 +464,15 @@
         if ([0,1,2,3].every(offset=>byDay.has(addDays(d,offset))))
           report("consecutive","quatre prises de poste consécutives à partir du "+d+".",d);
       }
+      for (const {date,interval:[a,b]} of weeks) {
+        const total=work.reduce((sum,w)=>sum+Math.max(0,Math.min(b,w.finish)-Math.max(a,w.begin)),0);
+        if (total>44*60) report("calendar_week",formatMinutes(total)+" du lundi "+date+
+          " au dimanche "+addDays(date,6)+" (maximum 44 h).",date);
+      }
+      for (const gap of restGaps(state,nid,start,end)) {
+        issue("rest_gap",name+" · "+gap.days+" jours de repos entre deux séries du "+
+          gap.start+" au "+gap.end+" (objectif : deux jours au plus).",gap.start,nid,"warning");
+      }
       const boundaries=new Set();
       for (const {begin,finish} of work)
         for (const t of [begin,finish,begin-weekMinutes,finish-weekMinutes]) boundaries.add(t);
@@ -411,15 +486,19 @@
         const d=localParts(when).day;
         report("weekly",formatMinutes(worst)+" de travail sur 168 h à partir du "+d+" (maximum 48 h).",d);
       }
-      for (const sat of dates(addDays(start,-2),end)) {
-        if (weekday(sat)!==5) continue;
-        const sun=addDays(sat,1),mon=addDays(sat,2);
+      for (const fri of dates(addDays(start,-3),end)) {
+        if (weekday(fri)!==4) continue;
+        const sat=addDays(fri,1),sun=addDays(fri,2),mon=addDays(fri,3);
         const known=d=>(d>=start && d<=end) || state.reviewed[d]?.includes(nid) ||
           Object.hasOwn(state.assignments[d]||{},nid);
         if (known(sat)&&known(sun)&&byDay.get(sat)!==byDay.get(sun))
           report("weekend","samedi "+sat+" et dimanche doivent être travaillés ensemble au même poste.",sat);
-        if (byDay.has(sun) && byDay.has(mon))
-          report("monday","nouvelle prise de poste le lundi "+mon+" après un week-end travaillé.",mon);
+        const nightBlock=[fri,sat,sun];
+        if (nightBlock.some(d=>byDay.get(d)==="N") && nightBlock.some(d=>known(d)&&byDay.get(d)!=="N"))
+          report("weekend_night","les trois nuits du vendredi "+fri+" au dimanche "+sun+
+            " doivent être confiées à la même IDE.",fri);
+        if (byDay.has(sun) && ["J","T"].includes(byDay.get(mon)))
+          report("monday","poste de jour le lundi "+mon+" après un week-end travaillé.",mon);
       }
       let missing=false;
       // An edited phase can also invalidate the first saved phase after the displayed month.
@@ -428,10 +507,12 @@
         if (d<=end && (!p || !prev)) missing=true;
         if (!p) continue;
         const shift=byDay.get(d);
-        if (d<=end && (p.age>state.settings.phase_max || (shift && (shift==="N")!==(p.mode==="N"))))
+        if (d<=end && (p.age>phaseBounds(state.settings,p.mode).max || (shift && (shift==="N")!==(p.mode==="N"))))
           report("regime","poste ou durée incompatible avec la période du "+d+".",d);
         if (prev) {
-          const valid=p.mode===prev.mode ? p.age===prev.age+1 : p.age===1 && prev.age>=state.settings.phase_min;
+          const previousBounds=phaseBounds(state.settings,prev.mode);
+          const valid=p.mode===prev.mode ? p.age===prev.age+1 :
+            p.age===1 && prev.age>=previousBounds.min && prev.age<=previousBounds.max;
           if (!valid) report("regime","transition de régime incohérente le "+d+".",d);
         }
       }
@@ -479,14 +560,27 @@
     const candidate=JSON.parse(JSON.stringify(state));
     // Only remove unused defaults from an untouched roster. Keep configured
     // contracts, periods and staff records, and reuse matching display names.
-    const defaults=[80,80,100,null,null,null,null];
+    const newDefaults=candidate.nurses.every(n=>n.contracts[0]?.percent===100);
+    const defaults=newDefaults?Array(7).fill(100):[80,80,100,null,null,null,null];
     const untouched=candidate.nurses.length===defaults.length && !candidate.absences.length &&
       ["assignments","reviewed","phases"].every(k=>!Object.keys(candidate[k]).length) &&
       candidate.nurses.every((n,i)=>n.id==="ide-"+String.fromCharCode(97+i) &&
         n.name==="IDE "+String.fromCharCode(65+i) && n.contracts.length===1 &&
         n.contracts[0].percent===defaults[i] && n.contracts[0].from.endsWith("-01-01"));
-    if (untouched) candidate.nurses=candidate.nurses.filter(n=>names.has(n.name));
-    const byName=new Map(),taken=new Set();
+    const defaultFrom=candidate.nurses[0].contracts[0].from;
+    const reuseDefaultContract=untouched && newDefaults && candidate.nurses.every(n=>n.contracts[0].from===defaultFrom);
+    let replacedCount=0;
+    if (untouched) {
+      // A partial monthly file can refer to a single member of the team.
+      // Reuse only as many empty slots as there are new identities.
+      const existingNames=new Set(candidate.nurses.map(n=>n.name));
+      const newNames=[...names].filter(name=>!existingNames.has(name));
+      const slots=candidate.nurses.filter(n=>!names.has(n.name)).slice(0,newNames.length);
+      const replaced=new Set(slots.map(n=>n.id));
+      replacedCount=replaced.size;
+      candidate.nurses=candidate.nurses.filter(n=>!replaced.has(n.id));
+    }
+    const byName=new Map(),taken=new Set(),placeholderContractIds=[];
     for (const n of candidate.nurses) {
       requireValue(!byName.has(n.name)||!names.has(n.name),"Le nom « "+n.name+" » désigne plusieurs IDE.");
       byName.set(n.name,n.id);
@@ -499,7 +593,10 @@
       const id="legacy-"+(nextId++);
       taken.add(id);
       byName.set(name,id);
-      candidate.nurses.push({id,name,contracts:[{from:"1900-01-01",percent:null}]});
+      const inherited=reuseDefaultContract && placeholderContractIds.length<replacedCount;
+      const contract=inherited?{from:defaultFrom,percent:100}:{from:"1900-01-01",percent:null};
+      candidate.nurses.push({id,name,contracts:[contract]});
+      if (inherited) placeholderContractIds.push(id);
     }
     for (const {name,date,shift} of records) {
       const id=byName.get(name),row=candidate.assignments[date]??={};
@@ -510,12 +607,12 @@
     }
     validateState(candidate);
     warnings.push("Plannings repris comme brouillons. Vérifiez les quotités, les périodes jour/nuit et les affectations.");
-    return {state:candidate,warnings};
+    return {state:candidate,warnings,placeholderContractIds};
   }
   globalThis.PlannerDomain=Object.freeze({SHIFT_MINUTES,SHIFT_LABELS,ABSENCE_KINDS,dates,addDays,weekday,
     monthBounds,formatMinutes,parseDuration,newState,quotaOn,setContract,isHoliday,defaultTiih,tiihRequired,
     changeTiih,shiftInterval,absentFor,absenceOn,setAbsence,creditMinutes,validateState,annualTotals,validateSchedule,
-    importLegacyFiles});
+    importLegacyFiles,calendarWeekBounds,restGaps,migrateState,phaseBounds});
 })();
 
 </script>
@@ -547,7 +644,7 @@
     if (!state.settings.rest_clock) throw Error("Préciser la convention des 12 h de repos.");
     const [start, end] = D.monthBounds(year, month);
     let horizon = D.addDays(end, 18);
-    if (D.weekday(horizon) === 5) horizon = D.addDays(horizon, 1);
+    if ([4, 5].includes(D.weekday(horizon))) horizon = D.addDays(horizon, 6-D.weekday(horizon));
     const days = D.dates(D.addDays(start, -priorDays), D.addDays(horizon, priorDays));
     const endIndex = days.indexOf(horizon);
     const shiftIntervals = days.map(day => Object.fromEntries(shifts.map(shift => [
@@ -556,6 +653,7 @@
     const restIntervals = state.settings.rest_clock === "elapsed" ? shiftIntervals :
       days.map(day => Object.fromEntries(shifts.map(shift => [shift, D.shiftInterval(day, shift, "wall")])));
     const weekdays = days.map(day => D.weekday(day));
+    const calendarWeeks = days.map(D.calendarWeekBounds);
     const needed = days.map(day => D.tiihRequired(state, day));
     const nurses = state.nurses.map(nurse => {
       const work = Array(days.length).fill(null);
@@ -575,11 +673,20 @@
             initialLoads[y] += D.SHIFT_MINUTES[shift];
         }
       }
+      const historicalShifts = {J:0, N:0};
+      for (const [day, team] of Object.entries(state.assignments)) {
+        const shift = team[nurse.id]?.shift;
+        if (day < start && (shift === "J" || shift === "N") && !D.absentFor(state,nurse.id,day,shift))
+          historicalShifts[shift]++;
+      }
+      const known = [], away = [];
       days.forEach((day, i) => {
         const old = state.assignments[day]?.[nurse.id];
         const reviewed = state.reviewed[day]?.includes(nurse.id);
         editable[i] = day >= start && day <= horizon && !old?.locked && !old?.confirmed &&
           (day <= end || (!reviewed && !old));
+        known[i] = editable[i] || reviewed || Boolean(old);
+        away[i] = D.absenceOn(state,nurse.id,day);
         const phase = state.phases[day]?.[nurse.id];
         oldPhase[i] = phase && (day < start || day > end || phase.locked)
           ? (phase.mode === "N" ? phase.age : -phase.age) : null;
@@ -589,7 +696,7 @@
         }
         available[i] = Object.fromEntries(shifts.map(code => [code, !D.absentFor(state,nurse.id,day,code)]));
       });
-      return {id:nurse.id, work, editable, oldPhase, available, averagedQuotas, initialLoads};
+      return {id:nurse.id, work, editable, known, away, oldPhase, available, averagedQuotas, initialLoads, historicalShifts};
     });
     const tasks = [];
     let impossible = null;
@@ -600,17 +707,23 @@
         if (owners.length > Number(need) || owners.some(n => !n.available[i][code])) {
           impossible = "Une affectation protégée est incompatible avec la couverture ou une absence le "+days[i]+".";
         }
-        if (!need || (weekdays[i] === 6 && i > priorDays)) continue;
-        const pair = weekdays[i] === 5;
-        const indices = pair ? [i,i+1] : [i];
-        if (pair && code === "T" && !needed[i+1]) {
-          impossible = "Le TIIH du samedi "+days[i]+" ne peut pas être travaillé au même poste le dimanche.";
-        }
-        const fixed = nurses.filter(n => indices.some(j => n.work[j] === code) ||
-          (i===priorDays && weekdays[i]===6 && n.work[i-1]===code));
-        if (fixed.length > 1) impossible = "Le week-end du "+days[i]+" comporte deux IDE protégées pour le même poste.";
+        if (!need) continue;
+        // The mandatory weekend units are Fri/Sat/Sun for N and Sat/Sun for J.
+        // Check saved members of a unit across month boundaries, even if the
+        // beginning of that unit predates the generated interval.
+        const groupStart = code === "N" ? 4 : 5;
+        const anchor = weekdays[i] >= groupStart ? i-(weekdays[i]-groupStart) : i;
+        const groupEnd = weekdays[i] >= groupStart ? anchor+6-groupStart : i;
+        if (i !== Math.max(priorDays,anchor)) continue;
+        const group=Array.from({length:groupEnd-anchor+1},(_,offset)=>anchor+offset);
+        const indices=group.filter(j=>j>=priorDays && j<=endIndex);
+        if (code === "T" && group.some(j=>!needed[j]))
+          impossible = "Un TIIH de week-end doit pouvoir être couvert au même poste samedi et dimanche.";
+        const fixed = nurses.filter(n => group.some(j => n.work[j] === code));
+        if (fixed.length > 1) impossible = "Plusieurs IDE sont protégées pour le même bloc de week-end du "+days[anchor]+".";
         const candidates = nurses.filter(n => (!fixed.length || n === fixed[0]) &&
-          indices.every(j => n.available[j][code] && (n.work[j] === code || (n.editable[j] && !n.work[j]))));
+          group.every(j => n.available[j][code] && (n.work[j]===code ||
+            (!n.work[j] && (n.editable[j] || (!n.known[j] && j<priorDays))))));
         if (!candidates.length) impossible = "Aucune IDE disponible pour "+D.SHIFT_LABELS[code]+" le "+days[i]+".";
         if (!indices.every(j => fixed[0]?.work[j] === code))
           tasks.push({i, code, indices, candidates});
@@ -618,13 +731,13 @@
       if (weekdays[i] === 6 && i > priorDays && needed[i] !== needed[i-1])
         impossible = "Le TIIH du week-end doit être couvert samedi et dimanche ensemble.";
     }
-    return {days, start, end, horizon, endIndex, nurses, tasks, shiftIntervals, restIntervals, weekdays, impossible};
+    return {days, start, end, horizon, endIndex, monthEnd:days.indexOf(end), nurses, tasks, shiftIntervals, restIntervals, calendarWeeks, weekdays, impossible};
   }
 
   // A positive age is a night regime, a negative age a day regime. Work backwards
   // to choose a legal trajectory that also reaches any known future regime.
-  function trajectory(nurse, days, settings, preferredLength, offset, nightFirst, anchor) {
-    const min=settings.phase_min, max=settings.phase_max;
+  function trajectory(nurse, days, phaseBounds, preferredLength, offset, nightFirst, anchor) {
+    const max=Math.max(phaseBounds.J.max,phaseBounds.N.max);
     const size = max * 2;
     let nextCosts = new Float64Array(size);
     const links = new Int16Array(size * days.length);
@@ -638,14 +751,16 @@
       const requiredMode = nurse.work[i] ? nurse.work[i]==="N" : null;
       for (let k=0; k<size; k++) {
         const night = k>=max, age = k%max+1;
+        const bounds=night ? phaseBounds.N : phaseBounds.J;
+        if (age>bounds.max) continue;
         if ((requiredMode !== null && requiredMode !== night) ||
             (nurse.oldPhase[i] !== null && nurse.oldPhase[i] !== (night?age:-age))) continue;
         let cost=0, to=-1;
         if (i < days.length-1) {
           cost=Infinity;
-          if (age < max) {cost=nextCosts[k+1]; to=k+1;}
+          if (age < bounds.max) {cost=nextCosts[k+1]; to=k+1;}
           const switched = night ? 0 : max;
-          if (age >= min && nextCosts[switched] < cost) {cost=nextCosts[switched]; to=switched;}
+          if (age >= bounds.min && nextCosts[switched] < cost) {cost=nextCosts[switched]; to=switched;}
         }
         costs[k] = cost + (preferredNight===night ? 0 : 5) + Math.abs(preferredAge-age)*0.02;
         links[i*size+k] = to;
@@ -693,6 +808,19 @@
     return true;
   }
 
+  function withinCalendarWeek(ctx, work, i, index) {
+    const [left,right] = ctx.calendarWeeks[index];
+    let total=0;
+    for (let j=Math.max(0,i-8); j<=Math.min(work.length-1,i+8); j++) {
+      if (!work[j]) continue;
+      const [begin,finish]=ctx.shiftIntervals[j][work[j]];
+      total+=Math.max(0,Math.min(finish,right)-Math.max(begin,left));
+    }
+    return total<=44*60;
+  }
+
+  const dayShift = shift => shift === "J" || shift === "T";
+
   function legalDay(ctx, nurse, i) {
     const work=nurse.work;
     const [start,end]=ctx.restIntervals[i][work[i]];
@@ -703,10 +831,71 @@
     for(let k=i+1;k<work.length && work[k];k++) run++;
     if (run>3) return false;
     const weekday=ctx.weekdays[i];
-    if ((weekday===0 && work[i-1]) || (weekday===6 && work[i+1])) return false;
-    if (weekday===6 && ((work[i-1] && work[i-1]!==work[i]) ||
-        (i===priorDays && nurse.knownSaturday && work[i-1]!==work[i]))) return false;
+    if ((weekday===0 && dayShift(work[i]) && work[i-1]) ||
+        (weekday===6 && dayShift(work[i+1]))) return false;
+    if (!withinCalendarWeek(ctx,work,i,i)) return false;
+    // Sunday nights also contribute eight real hours to the following week.
+    if (weekday===6 && work[i]==="N" && !withinCalendarWeek(ctx,work,i,i+1)) return false;
     return withinWeeklyLimit(ctx, work, i);
+  }
+
+  // Count only completed breaks bounded by two work series, with a known
+  // schedule throughout. Absences and missing history interrupt a break.
+  function precedingBreak(n, i) {
+    let days=0;
+    for (let j=i-1; j>=0; j--) {
+      if(n.work[j]) return days;
+      if(!n.known[j] || n.away[j]) break;
+      days++;
+    }
+    return 0;
+  }
+
+  // A preference on Friday's J helps reserve the same nurse for Saturday and
+  // Sunday. Saturday's actual assignment remains free if the trio is infeasible.
+  function canExtendFriday(ctx, nurse, i) {
+    for (const j of [i+1,i+2]) {
+      if (nurse.phases[j]>0 || !nurse.available[j].J ||
+          (nurse.work[j]!=="J" && (!nurse.editable[j] || nurse.work[j]))) return false;
+      if (ctx.nurses.some(other=>other!==nurse && other.work[j]==="J")) return false;
+    }
+    const previous=nurse.work.slice(i,i+3);
+    nurse.work.fill("J",i,i+3);
+    const legal=[i,i+1,i+2].every(j=>legalDay(ctx,nurse,j));
+    nurse.work.splice(i,3,...previous);
+    return legal;
+  }
+
+  // Try the regular 2 + 2 + 3 weekday pattern first. A grouped trial may fail
+  // on a locked shift, a regime boundary or an absence. Independent searches
+  // with partially grouped and ungrouped shifts explore other arrangements.
+  function groupPreferredSeries(ctx, slots, attempt) {
+    const pattern=attempt%8;
+    if (pattern===7) return slots;
+    const buckets=new Map();
+    for(const slot of slots) {
+      const {i,code}=slot;
+      const weekday=ctx.weekdays[i];
+      let first=i;
+      if(code==="N" && pattern!==5 && pattern!==6 && weekday<4)
+        first=i-weekday%2;
+      if(code==="J") {
+        if (weekday>=4 && pattern!==6) first=i-(weekday-4);
+        else if (weekday<4 && pattern<=3) first=i-weekday%2;
+      }
+      const key=code+":"+first;
+      if (!buckets.has(key)) buckets.set(key,[]);
+      buckets.get(key).push(slot);
+    }
+    const grouped=[];
+    for(const group of buckets.values()) {
+      if(group.length===1) {grouped.push(group[0]);continue;}
+      const candidates=group[0].candidates.filter(n=>group.every(s=>s.candidates.includes(n)));
+      if(candidates.length) grouped.push({i:group[0].i,code:group[0].code,
+        indices:group.flatMap(s=>s.indices),candidates});
+      else grouped.push(...group);
+    }
+    return grouped;
   }
 
   function search(ctx, state, D, random, attempt, deadline) {
@@ -721,18 +910,22 @@
       14 : settings.phase_target;
     const anchor=10959; // Monday, 3 January 2000.
     const phaseMap=new Map();
+    const phaseBounds={J:D.phaseBounds(settings,"J"),N:D.phaseBounds(settings,"N")};
     for (let pos=0; pos<order.length; pos++) {
       const n=order[pos];
       n.loads={...n.initialLoads};
-      n.knownSaturday=state.reviewed[days[priorDays-1]]?.includes(n.id);
+      n.counts={...n.historicalShifts};
+      for(let i=priorDays;i<=ctx.monthEnd;i++)
+        if (n.work[i]==="J" || n.work[i]==="N") n.counts[n.work[i]]++;
       const stagger=attempt%4===0 ? 0 : (attempt%4===1 ? (pos%3)*5 : Math.floor(random()*length));
-      n.phases=trajectory(n,days,settings,length,stagger,pos%2===0,anchor);
+      n.phases=trajectory(n,days,phaseBounds,length,stagger,pos%2===0,anchor);
       if (!n.phases) return null;
       phaseMap.set(n.id,n.phases);
     }
-    const slots=tasks.map(t=>({...t, candidates:t.candidates.filter(n =>
+    const rawSlots=tasks.map(t=>({...t, candidates:t.candidates.filter(n =>
       t.indices.every(j => (n.phases[j]>0)===(t.code==="N")))}));
-    if (slots.some(t=>!t.candidates.length)) return null;
+    if (rawSlots.some(t=>!t.candidates.length)) return null;
+    const slots=groupPreferredSeries(ctx,rawSlots,attempt);
     slots.sort((a,b)=>a.i-b.i || a.candidates.length-b.candidates.length);
     let nodes=0;
     function visit(k) {
@@ -748,11 +941,16 @@
         const legal=indices.every(j=>legalDay(ctx,n,j));
         for (const j of changed) n.work[j]=null;
         if (!legal) continue;
-        // Normalise by contracted time. Group adjacent nights, leaving space
-        // for a two-night weekend when choosing the preceding Thursday/Friday.
-        let cost=n.loads[year]/(n.averagedQuotas[year]/100);
-        if(code==="N" && (n.work[i-1]==="N" || n.work[indices.at(-1)+1]==="N")) cost-=1800;
-        cost+=random()*650;
+        const quota=n.averagedQuotas[year]/100;
+        let cost=n.loads[year]/quota;
+        if(code==="J" || code==="N") cost+=1080*n.counts[code]/quota;
+        const inSameSeries=code==="N" ? (shift=>shift==="N") : dayShift;
+        if(inSameSeries(n.work[i-1]) || inSameSeries(n.work[indices.at(-1)+1])) cost-=1600;
+        const gap=precedingBreak(n,i);
+        if (gap>=2) cost-=Math.min(gap-1,7)*620;
+        if(code==="J" && ctx.weekdays[i]===4 && canExtendFriday(ctx,n,i)) cost-=1150;
+        if(code==="J" && ctx.weekdays[i]===5 && n.work[i-1]==="J") cost-=2300;
+        cost+=random()*900;
         ranked.push({n,changed,cost});
       }
       ranked.sort((a,b)=>a.cost-b.cost);
@@ -760,17 +958,19 @@
         for (const j of changed) {
           n.work[j]=code;
           n.loads[days[j].slice(0,4)] += D.SHIFT_MINUTES[code];
+          if(j<=ctx.monthEnd && code!=="T") n.counts[code]++;
         }
         if (visit(k+1)) return true;
         for (const j of changed) {
           n.work[j]=null;
           n.loads[days[j].slice(0,4)] -= D.SHIFT_MINUTES[code];
+          if(j<=ctx.monthEnd && code!=="T") n.counts[code]--;
         }
       }
       return false;
     }
     if (!visit(0)) return null;
-    let isolated=0;
+    let isolated=0, isolatedDays=0, skippedFriday=0, surplusRest=0;
     const candidate=JSON.parse(JSON.stringify(state));
     for(let i=priorDays;i<=ctx.endIndex;i++) {
       const day=days[i];
@@ -778,7 +978,12 @@
       candidate.phases[day]??={};
       candidate.reviewed[day]??=[];
       for(const n of nurses) {
-        if (n.work[i]==="N" && n.work[i-1]!=="N" && n.work[i+1]!=="N") isolated++;
+        if (i<=ctx.monthEnd && n.work[i]) {
+          if (n.work[i]==="N" && n.work[i-1]!=="N" && n.work[i+1]!=="N") isolated++;
+          if (dayShift(n.work[i]) && !dayShift(n.work[i-1]) && !dayShift(n.work[i+1])) isolatedDays++;
+          if (ctx.weekdays[i]===5 && n.work[i]==="J" && n.work[i-1]!=="J") skippedFriday++;
+          surplusRest+=Math.max(0,precedingBreak(n,i)-2);
+        }
         if (n.editable[i]) {
           candidate.assignments[day][n.id]={shift:n.work[i]||"-",locked:false,confirmed:false};
           if (!candidate.reviewed[day].includes(n.id)) candidate.reviewed[day].push(n.id);
@@ -798,7 +1003,15 @@
       const loads=nurses.map(n=>n.loads[year]/(n.averagedQuotas[year]/100));
       return sum+Math.max(...loads)-Math.min(...loads);
     },0);
-    return {candidate,isolated,score:isolated*720+balance};
+    let shiftImbalance=0;
+    for(const code of ["J","N"]) {
+      const counts=nurses.map(n=>n.counts[code]*100/n.averagedQuotas[ctx.start.slice(0,4)]);
+      const average=counts.reduce((sum,count)=>sum+count,0)/counts.length;
+      shiftImbalance+=counts.reduce((sum,count)=>sum+(count-average)**2,0);
+    }
+    const score=shiftImbalance*180 + balance*0.2 + (isolated+isolatedDays)*320 +
+      surplusRest*180 + skippedFriday*520;
+    return {candidate,isolated,isolatedDays,surplusRest,score};
   }
 
   function generate(state, year, month, {timeLimitMs=1800, seed=Date.now()}={}) {
@@ -811,7 +1024,7 @@
     const random=randomGenerator(seed);
     let best=null, firstSuccess=null;
     for(let attempt=0;attempt<250 && now()<deadline;attempt++) {
-      if(firstSuccess!==null && now()-firstSuccess>280) break;
+      if(firstSuccess!==null && now()-firstSuccess>950) break;
       const found=search(ctx,state,D,random,attempt,deadline);
       if (!found || (best && found.score>=best.score)) continue;
       const issues=D.validateSchedule(found.candidate,ctx.start,ctx.horizon);
@@ -820,9 +1033,95 @@
       firstSuccess??=now();
     }
     if (!best) return result("unknown","Aucune proposition trouvée dans le temps de recherche. Vérifiez les absences, les postes protégés et les besoins TIIH. Vous pouvez relancer la recherche.");
-    return result("feasible","Proposition contrôlée, avec anticipation jusqu’au "+ctx.horizon+".",best.candidate,ctx.horizon,best.isolated);
+    const restGapDays=ctx.nurses.reduce((sum,n)=>sum+D.restGaps(best.candidate,n.id,ctx.start,ctx.end)
+      .reduce((days,gap)=>days+Math.max(0,gap.days-2),0),0);
+    return {...result("feasible","Proposition contrôlée, avec anticipation jusqu’au "+ctx.horizon+".",
+      best.candidate,ctx.horizon,best.isolated), isolatedDays:best.isolatedDays,restGapDays};
   }
   globalThis.PlannerEngine=Object.freeze({generate});
+})();
+
+</script>
+<script>
+/* Import the monthly attendance grid. JSON remains the full-fidelity backup. */
+(() => {
+  "use strict";
+
+  function readRows(text, separator) {
+    const rows = [];
+    let row = [], field = "", quoted = false, closing = false;
+    for (let i = 0; i < text.length; i++) {
+      const c = text[i];
+      if (quoted) {
+        if (c !== '"') field += c;
+        else if (text[i + 1] === '"') { field += '"'; i++; }
+        else { quoted = false; closing = true; }
+        continue;
+      }
+      if (c === separator || c === "\r" || c === "\n") {
+        row.push(field);
+        field = ""; closing = false;
+        if (c !== separator) {
+          if (row.some(value => value !== "")) rows.push(row);
+          row = [];
+          if (c === "\r" && text[i + 1] === "\n") i++;
+        }
+      } else if (c === '"' && !field && !closing) {
+        quoted = true;
+      } else {
+        if (closing || c === '"') throw Error("Guillemets incorrects dans le CSV.");
+        field += c;
+      }
+    }
+    if (quoted) throw Error("Guillemets non fermés dans le CSV.");
+    row.push(field);
+    if (row.some(value => value !== "")) rows.push(row);
+    return rows;
+  }
+
+  function toLegacyFile(file) {
+    const text = file.content.replace(/^\uFEFF/, "");
+    const delimiter = /^(?:"IDE"|IDE)([;,])/i.exec(text)?.[1];
+    if (!delimiter) throw Error(file.name + " : le CSV mensuel doit commencer par IDE puis les dates AAAA-MM-JJ.");
+    const [header, ...rows] = readRows(text, delimiter);
+    const days = header.slice(1);
+    const month = days[0]?.slice(0, 7);
+    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month) || !rows.length)
+      throw Error(file.name + " : choisissez un CSV mensuel de planning contenant des IDE et des dates.");
+    const last = globalThis.PlannerDomain.monthBounds(Number(month.slice(0, 4)), Number(month.slice(5)))[1];
+    const validDays = new Set(globalThis.PlannerDomain.dates(month + "-01", last));
+    if (days.some(day => !validDays.has(day)) || new Set(days).size !== days.length)
+      throw Error(file.name + " : chaque colonne doit porter une date distincte du même mois.");
+
+    const result = Object.create(null), missingAbsences = [];
+    const labels = new Map([["J","J"],["SMUR J","J"],["N","N"],["SMUR N","N"],
+      ["T","T"],["TIIH","T"],["REPOS","-"],["-","-"],["'-","-"]]);
+    for (const [index, row] of rows.entries()) {
+      if (row.length !== header.length)
+        throw Error(file.name + " : nombre de colonnes incorrect à la ligne " + (index + 2) + ".");
+      // The exporter protects formula-like fields for spreadsheet software.
+      const name = row[0].replace(/^'(?=\s*[=+@-])/, "").trim();
+      if (!name || Object.hasOwn(result, name)) throw Error(file.name + " : nom d’IDE vide ou en double.");
+      const entries = result[name] = Object.create(null);
+      days.forEach((day, column) => {
+        const label = row[column+1].trim().toUpperCase();
+        if (["","NON RENSEIGNÉ","INCONNU","À RENSEIGNER"].includes(label)) return;
+        if (label === "ABSENCE") { missingAbsences.push(name + " · " + day); return; }
+        if (!labels.has(label)) throw Error(file.name + " : poste non reconnu pour " + name + " le " + day + " (« " + row[column+1] + " »).");
+        entries[String(Number(day.slice(-2)))] = labels.get(label);
+      });
+    }
+    const warnings = [];
+    if (missingAbsences.length) {
+      warnings.push(file.name + " · " + missingAbsences.length + " case(s) Absence sans horaires ni crédit : " +
+        missingAbsences.slice(0, 7).join(", ") + (missingAbsences.length > 7 ? "…" : "") +
+        ". Elles restent à renseigner dans Absences. La sauvegarde JSON complète conserve ces informations.");
+    }
+    if (!Object.values(result).some(row => Object.keys(row).length))
+      throw Error(file.name + " : le CSV ne contient aucun poste ni repos renseigné. Utilisez une sauvegarde JSON pour reprendre les absences.");
+    return {name: "planning_" + month.replace("-", "_") + ".json", content: JSON.stringify(result), warnings};
+  }
+  globalThis.PlannerCSV = Object.freeze({toLegacyFile});
 })();
 
 </script>
@@ -834,15 +1133,21 @@
   const main = document.getElementById("app");
   const nav = document.getElementById("nav");
   const dialog = document.getElementById("editor");
-  const pages = {planning:"Planning", absence:"Absences", tiih:"TIIH", team:"Équipe et règles", annual:"Compteurs", files:"Sauvegardes"};
+  const pages = {planning:"Planning", absence:"Absences", tiih:"TIIH", team:"Équipe et règles", annual:"Compteurs", files:"Imports et exports"};
   const esc = value => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]);
   const clone = value => JSON.parse(JSON.stringify(value));
-  const dateFmt = (day, options) => new Intl.DateTimeFormat("fr-FR",{timeZone:"UTC",...options}).format(new Date(day+"T12:00:00Z"));
+  const formatters=new Map();
+  function dateFmt(day,options) {
+    const key=JSON.stringify(options);
+    if(!formatters.has(key)) formatters.set(key,new Intl.DateTimeFormat("fr-FR",{timeZone:"UTC",...options}));
+    return formatters.get(key).format(new Date(day+"T12:00:00Z"));
+  }
   const shortDay = day => dateFmt(day,{day:"numeric",month:"short",year:"numeric"});
   const todayParts = new Intl.DateTimeFormat("fr-FR",{year:"numeric",month:"2-digit",day:"2-digit",timeZone:"Europe/Paris"}).formatToParts(new Date());
   const today = ["year","month","day"].map(k => todayParts.find(x=>x.type===k).value).join("-");
   const baseKey = "planning-ide.hors-ligne.v2";
-  let page = "planning", period = today.slice(0,7), week = Math.floor((Number(today.slice(-2))-1)/7), demo = false;
+  let page = "planning", period = today.slice(0,7), week = -1, demo = false;
+  let planningMode="team", selectedNurseId=null;
   let proposal = null, absenceId = "", storageAvailable = true, stored = null, broken = false, busy = false, state;
   const key = () => baseKey+(demo?".demo":"");
   function notify(message="", failed=false) {
@@ -856,15 +1161,14 @@
     try { raw = localStorage.getItem(key()); } catch { storageAvailable = false; }
     stored = raw;
     if(raw !== null) {
-      try {const saved = JSON.parse(raw); D.validateState(saved); state = saved; return;}
-      catch { broken = true; notify("La sauvegarde de ce navigateur est illisible. Vous pouvez la télécharger ou importer un fichier valide dans Sauvegardes.",true); }
+      try {state = D.migrateState(JSON.parse(raw)); return;}
+      catch { broken = true; notify("La sauvegarde de ce navigateur est illisible. Téléchargez-la ou restaurez un fichier valide dans Imports et exports.",true); }
     }
     state = D.newState(Number(today.slice(0,4)));
-    if(demo) state.nurses.forEach((n,i)=>{n.name="IDE "+String.fromCharCode(65+i); n.contracts=[{from:"1900-01-01",percent:[80,80,100,90,100,100,100][i]}];});
   }
   function save(candidate,message,{replace=false}={}) {
     D.validateState(candidate);
-    if(broken && !replace) throw Error("Restaurez d’abord une sauvegarde valide dans Sauvegardes.");
+    if(broken && !replace) throw Error("Restaurez d’abord une sauvegarde valide dans Imports et exports.");
     candidate.revision = Math.max(state.revision || 0,candidate.revision || 0)+1;
     const encoded = JSON.stringify(candidate);
     if(storageAvailable) {
@@ -899,10 +1203,10 @@
   const dataAtt = (name,val) => 'data-'+name+'="'+esc(val)+'"';
   function setPeriod(value) {
     if(!/^\d{4}-(0[1-9]|1[0-2])$/.test(value) || Number(value.slice(0,4))<1900 || Number(value.slice(0,4))>2199) throw Error("Choisissez un mois entre 1900 et 2199.");
-    period=value; week=0; proposal=null; absenceId=""; notify(); render();
+    period=value; week=-1; proposal=null; absenceId=""; notify(); render();
   }
   function switchSpace(toDemo) {
-    demo=toDemo; page="planning"; week=0; proposal=null; absenceId=""; notify(); load(); render();
+    demo=toDemo; page="planning"; week=-1; proposal=null; absenceId=""; notify(); load(); render();
   }
   function render() {
     document.getElementById("storage-status").textContent = demo ? "Équipe fictive · Essai" : storageAvailable?"Sur cet appareil":"Sauvegarde JSON requise";
@@ -915,8 +1219,47 @@
     const a=s.assignments[day]?.[id];
     const shift=a?.shift||"-";
     const code=shift==="-" && D.absenceOn(s,id,day)?"A":shift;
-    const label=code==="A"?"Absence":D.SHIFT_LABELS[shift];
-    return {code,label,a};
+    const unknown=code==="-" && !a && !s.reviewed[day]?.includes(id);
+    const label=unknown?"Non renseigné":code==="A"?"Absence":D.SHIFT_LABELS[shift];
+    return {code,label,a,unknown};
+  }
+  const shiftFamily = code => code==="J" || code==="T" ? "J" : code==="N" ? "N" : null;
+  function balanceRows(s) {
+    const [start,end]=range();
+    const rows=new Map(s.nurses.map(n=>[n.id,{name:n.name,pastJ:0,pastN:0,J:0,N:0,T:0,aloneJ:0,aloneN:0}]));
+    const idsWithAbsences=new Set(s.absences.map(a=>a.nurse_id));
+    const conflicts=(id,day,code)=>idsWithAbsences.has(id) && D.absentFor(s,id,day,code);
+    for(const [day,assignments] of Object.entries(s.assignments)) {
+      if(day>end) continue;
+      for(const [id,{shift}] of Object.entries(assignments)) {
+        const family=shiftFamily(shift);
+        if(!family || conflicts(id,day,shift)) continue;
+        const row=rows.get(id);
+        if(day<start) {
+          if(shift==="J" || shift==="N") row["past"+shift]++;
+        } else {
+          row[shift]++;
+          const hasNeighbour=[-1,1].some(offset=>{
+            const neighbour=D.addDays(day,offset), shift=s.assignments[neighbour]?.[id]?.shift;
+            return shiftFamily(shift)===family && !conflicts(id,neighbour,shift);
+          });
+          if(!hasNeighbour) row["alone"+family]++;
+        }
+      }
+    }
+    return [...rows.values()];
+  }
+  function balanceView(s,preview) {
+    const rows=balanceRows(s);
+    const start=range()[0];
+    const earlier=Object.entries(s.assignments).filter(([day,a])=>day<start && Object.values(a).some(record=>shiftFamily(record.shift))).map(([day])=>day).sort();
+    const history=earlier.length?"Historique disponible depuis le "+shortDay(earlier[0])+".":"Aucun poste antérieur à ce mois dans l’historique.";
+    const counts=rows.map(r=>[r.pastJ,r.pastN,r.J,r.N,r.T,r.pastJ+r.J,r.pastN+r.N,r.aloneJ,r.aloneN]);
+    const bands=[["Avant ce mois",2],[preview?"Mois proposé":"Mois affiché",3],["Cumul SMUR",2],["Isolés du mois",2]];
+    return '<section class="panel balance"><div class="panelhead"><div><h2>Répartition des postes par IDE</h2><p class="subtle">'+esc(history)+'</p></div>'+btn("export-balance","Exporter la répartition en CSV")+'</div><div class="scroll"><table><thead><tr><th rowspan="2" scope="col">IDE</th>'+
+      bands.map(([l,n])=>'<th scope="colgroup" colspan="'+n+'">'+l+'</th>').join("")+'</tr><tr>'+
+      ["SMUR J","SMUR N","SMUR J","SMUR N","TIIH","Jour","Nuit","Jour","Nuit"].map(l=>'<th scope="col">'+l+'</th>').join("")+
+      '</tr></thead><tbody>'+rows.map((r,i)=>'<tr><th scope="row">'+esc(r.name)+'</th>'+counts[i].map(v=>'<td>'+v+'</td>').join("")+'</tr>').join("")+'</tbody></table></div><p class="hint">Le cumul additionne les postes SMUR de l’historique et du mois, hors chevauchements avec une absence. Un poste est isolé si aucun poste du même régime ne figure la veille ou le lendemain. Le TIIH compte comme une journée pour ce calcul.</p></section>';
   }
   function planningView() {
     const [start,end]=range(), all=days(), s=proposal?.candidate||state;
@@ -924,29 +1267,66 @@
     const monthName=dateFmt(start,{month:"long",year:"numeric"});
     const missing=state.nurses.filter(n=>D.quotaOn(n,start)==null).length;
     let out=title(monthName[0].toUpperCase()+monthName.slice(1),picker()+btn("generate",busy?"Recherche en cours…":"Générer une proposition","primary",busy || missing || proposal?"disabled":""));
-    if(missing && !proposal) out+='<aside class="notice"><p><strong>'+missing+' quotité'+(missing>1?'s':'')+' à compléter</strong><br>Renseignez les temps de travail pour générer le premier planning.</p><div class="actions">'+btn("page","Configurer l’équipe","primary",dataAtt("page","team"))+(demo?"":btn("demo","Essayer avec une équipe fictive"))+'</div></aside>';
-    if(proposal) out+='<aside class="proposal"><div><strong>Proposition à examiner</strong><p>'+esc(proposal.message)+'</p><small>'+esc(proposal.isolatedNights??0)+' nuit(s) isolée(s)'+(proposal.end?' · Affectations proposées jusqu’au '+esc(shortDay(proposal.end)):'')+'</small></div><div class="actions">'+btn("accept","Conserver la proposition","primary")+btn("discard","Écarter")+'</div></aside>';
-    out+='<div class="metricgrid">'+["J","N","T"].map(code=>{
+    if(!demo && !proposal && !Object.keys(state.assignments).length)
+      out+='<aside class="notice"><p><strong>Démarrer le planning</strong><br>Vous pouvez reprendre les postes d’un ancien planning ou essayer avec des noms fictifs.</p><div class="actions">'+btn("page","Importer un planning","",dataAtt("page","files"))+btn("demo","Essayer avec une équipe fictive")+'</div></aside>';
+    if(missing && !proposal) out+='<aside class="notice"><p><strong>'+missing+' quotité'+(missing>1?'s':'')+' à compléter</strong><br>Renseignez les temps de travail pour générer le premier planning.</p>'+btn("page","Configurer l’équipe","primary",dataAtt("page","team"))+'</aside>';
+    if(!missing && !proposal && state.nurses.some(n=>D.quotaOn(n,start)<100))
+      out+='<aside class="notice"><p>Des IDE sont à temps partiel au '+esc(shortDay(start))+'. Vous pouvez choisir la date de leur passage à 100 %.</p>'+btn("page","Modifier les quotités","",dataAtt("page","team"))+'</aside>';
+    if(proposal) out+='<aside class="proposal"><div><strong>Proposition à examiner</strong><p>'+esc(proposal.message)+'</p><small>'+(proposal.end?'Affectations proposées jusqu’au '+esc(shortDay(proposal.end)):'')+'</small></div><div class="actions">'+btn("accept","Conserver la proposition","primary")+btn("discard","Écarter")+'</div></aside>';
+    if(planningMode==="team") out+='<div class="metricgrid">'+["J","N","T"].map(code=>{
       const need=all.filter(d=>code!=="T"||D.tiihRequired(s,d));
       const covered=need.filter(d=>Object.values(s.assignments[d]||{}).filter(a=>a.shift===code).length===1).length;
       return '<div class="metric"><span class="swatch '+code+'">'+code+'</span><div><div class="rolelabel">'+D.SHIFT_LABELS[code]+'</div><small>'+({J:"08 h – 20 h",N:"20 h – 08 h",T:"09 h – 16 h 42"})[code]+'</small></div><span class="value" title="Postes couverts sur postes requis">'+covered+' <small>/ '+need.length+'</small></span></div>';
     }).join("")+'</div>';
-    const pagesCount=Math.ceil(all.length/7);
-    week=Math.max(0,Math.min(pagesCount-1,week));
-    const shown=all.slice(week*7,week*7+7);
-    const tabBtns=Array.from({length:pagesCount},(_,i)=>btn("week",String(i*7+1)+"–"+String(Math.min(all.length,i*7+7)),"",dataAtt("week",i)+' aria-pressed="'+(week===i)+'"')).join("");
-    out+='<section class="panel"><div class="panelhead"><div><h2>'+(proposal?"Planning proposé":"Planning enregistré")+'</h2><p class="subtle">'+(proposal?"Parcourez les dates avant de conserver la proposition.":"Cliquez sur une case pour modifier le poste ou le verrouiller.")+'</p></div><div class="weekbar" aria-label="Jours du mois">'+tabBtns+'</div></div><div class="scroll"><table class="grid"><thead><tr><th>IDE</th>'+shown.map(day=>'<th class="'+(D.weekday(day)>4?"weekend":"")+'">'+esc(dateFmt(day,{weekday:"short"}))+'<span>'+Number(day.slice(-2))+'</span></th>').join("")+'</tr></thead><tbody>';
-    out+=s.nurses.map(n=>'<tr><th scope="row">'+esc(n.name)+'</th>'+shown.map(day=>{
-      const {code,label,a}=cellInfo(s,n.id,day);
-      return '<td class="'+(D.weekday(day)>4?"weekend":"")+'">'+btn("cell",code==="-"?"—":code==="A"?"Abs.":D.SHIFT_LABELS[code],"cell "+(code==="-"?"empty":code)+(a?.locked||a?.confirmed?" locked":""),dataAtt("nurse",n.id)+' '+dataAtt("day",day)+' aria-label="'+esc(n.name+", "+shortDay(day)+", "+label)+'"'+(proposal?" disabled":""))+'</td>';
-    }).join("")+'</tr>').join("")+'</tbody></table></div><div class="legend"><span><b class="J"></b>SMUR jour</span><span><b class="N"></b>SMUR nuit</span><span><b class="T"></b>TIIH</span><span><b class="A"></b>Absence</span><span>— Repos</span><span>• Poste protégé</span></div>';
-    const errors=issueList.filter(i=>i.severity==="error"), warnings=issueList.filter(i=>i.severity!=="error");
-    out+='<details class="validation"><summary>'+errors.length+' conflit(s) · '+warnings.length+' point(s) de contexte</summary><ul>'+issueList.map(i=>'<li class="'+(i.severity==="error"?"issueerror":"")+'">'+esc(i.message)+'</li>').join("")+'</ul></details></section>';
-    if(proposal?.end>end) {
+    const person=s.nurses.find(n=>n.id===selectedNurseId)??s.nurses[0];
+    selectedNurseId=person.id;
+    const individual=planningMode==="individual";
+    out+='<section class="panel"><div class="panelhead"><div><h2>'+(proposal?"Planning proposé":"Planning enregistré")+'</h2><p class="subtle">'+(proposal?"Consultez les postes avant de conserver la proposition.":"Sélectionnez un poste ou une journée pour modifier l’affectation.")+'</p></div>'+
+      '<div class="weekbar viewbar" role="group" aria-label="Vue du planning">'+btn("planning-mode","Équipe","",dataAtt("mode","team")+' aria-pressed="'+!individual+'"')+btn("planning-mode","Par IDE","",dataAtt("mode","individual")+' aria-pressed="'+individual+'"')+'</div></div>';
+    out+=individual?individualAgenda(s,person,all):teamGrid(s,all);
+    const visibleIssues=individual?issueList.filter(i=>i.nurse_id===person.id):issueList;
+    const gaps=visibleIssues.filter(i=>i.code==="rest_gap"), others=visibleIssues.filter(i=>i.code!=="rest_gap");
+    const errors=others.filter(i=>i.severity==="error"), warnings=others.filter(i=>i.severity!=="error");
+    if(gaps.length) out+='<details class="validation"><summary>Repos de plus de deux jours entre séries · '+gaps.length+'</summary><ul>'+gaps.map(i=>'<li>'+esc(i.message)+'</li>').join("")+'</ul></details>';
+    out+='<details class="validation"><summary>'+errors.length+' conflit(s) · '+warnings.length+' point(s) de contexte</summary><ul>'+others.map(i=>'<li class="'+(i.severity==="error"?"issueerror":"")+'">'+esc(i.message)+'</li>').join("")+'</ul></details></section>';
+    if(!individual && proposal?.end>end) {
       const future=D.dates(D.addDays(end,1),proposal.end);
       out+='<details class="panel"><summary>Voir l’anticipation jusqu’au '+esc(shortDay(proposal.end))+'</summary><div class="scroll"><table><thead><tr><th>Date</th><th>SMUR J</th><th>SMUR N</th><th>TIIH</th></tr></thead><tbody>'+future.map(d=>'<tr><th>'+esc(shortDay(d))+'</th>'+["J","N","T"].map(c=>'<td>'+esc(s.nurses.filter(n=>s.assignments[d]?.[n.id]?.shift===c).map(n=>n.name).join(", ")||"—")+'</td>').join("")+'</tr>').join("")+'</tbody></table></div></details>';
     }
-    return out+'<div class="bottomaction">'+btn("csv",proposal?"Exporter la proposition en CSV":"Exporter le mois en CSV")+'</div>';
+    return out+(individual?"":balanceView(s,Boolean(proposal)))+'<div class="bottomaction actions">'+(!demo && Object.keys(state.assignments).length?btn("demo","Essayer avec une équipe fictive"):"")+btn("csv",individual?"Exporter toute l’équipe en CSV":proposal?"Exporter la proposition en CSV":"Exporter le mois en CSV")+'</div>';
+  }
+  function teamGrid(s,all) {
+    const pageCount=Math.ceil(all.length/7);
+    week=Math.max(-1,Math.min(pageCount-1,week));
+    const full=week===-1, shown=full?all:all.slice(week*7,week*7+7);
+    const pager=(i,label)=>btn("week",label,"",dataAtt("week",i)+' aria-pressed="'+(week===i)+'"');
+    const pages=[pager(-1,"Mois entier"),...Array.from({length:pageCount},(_,i)=>pager(i,(i*7+1)+"–"+Math.min(all.length,i*7+7)))];
+    const headings=shown.map(day=>'<th scope="col" class="'+(D.weekday(day)>4?"weekend":"")+'">'+
+      esc(dateFmt(day,{weekday:full?"narrow":"short"}))+'<span>'+Number(day.slice(-2))+'</span></th>').join("");
+    const rows=s.nurses.map(n=>'<tr><th scope="row">'+esc(n.name)+'</th>'+shown.map(day=>{
+      const {code,label,a,unknown}=cellInfo(s,n.id,day);
+      const mark=unknown?"?":code==="-"?"—":full?code:code==="A"?"Abs.":D.SHIFT_LABELS[code];
+      const classes="cell "+(unknown?"unassigned":code==="-"?"empty":code)+(a?.locked||a?.confirmed?" locked":"");
+      const tag=esc(n.name+", "+shortDay(day)+", "+label);
+      return '<td class="'+(D.weekday(day)>4?"weekend":"")+'">'+btn("cell",mark,classes,dataAtt("nurse",n.id)+' '+dataAtt("day",day)+' aria-label="'+tag+'" title="'+tag+'"'+(proposal?" disabled":""))+'</td>';
+    }).join("")+'</tr>').join("");
+    return '<div class="weekbar date-range" role="group" aria-label="Jours du mois">'+pages.join("")+'</div><div class="scroll"><table class="grid'+(full?" full-grid":"")+'"><thead><tr><th scope="col">IDE</th>'+headings+'</tr></thead><tbody>'+rows+'</tbody></table></div><div class="legend"><span><b class="J"></b>J · SMUR jour</span><span><b class="N"></b>N · SMUR nuit</span><span><b class="T"></b>T · TIIH</span><span><b class="A"></b>A · Absence</span><span>— Repos</span><span>? Non renseigné</span><span>• Poste protégé</span></div>';
+  }
+  function individualAgenda(s,person,all) {
+    const schedule={J:"8 h – 20 h",N:"20 h – 8 h le lendemain",T:"9 h – 16 h 42"};
+    const count={J:0,N:0,T:0};
+    const list=all.map(day=>{
+      const {code,label,a,unknown}=cellInfo(s,person.id,day);
+      if(Object.hasOwn(count,code)) count[code]++;
+      const tag=esc(person.name+", "+shortDay(day)+", "+label+(schedule[code]?", "+schedule[code]:""));
+      const dayLabel=esc(dateFmt(day,{weekday:"short",day:"numeric",month:"short"}));
+      const slot=schedule[code]||"";
+      const protection=a?.locked||a?.confirmed;
+      return '<li><button type="button" class="agenda-day'+(D.weekday(day)>4?" weekend":"")+'" data-act="cell" '+dataAtt("nurse",person.id)+' '+dataAtt("day",day)+' aria-label="'+tag+'"'+(proposal?' disabled':'')+'><span class="agenda-date">'+dayLabel+'</span><span class="agenda-label '+(unknown?"unassigned":code==="-"?"empty":code)+(protection?" locked":"")+'">'+esc(label)+'</span><span class="agenda-time">'+slot+'</span></button></li>';
+    }).join("");
+    const total=count.J*D.SHIFT_MINUTES.J+count.N*D.SHIFT_MINUTES.N+count.T*D.SHIFT_MINUTES.T;
+    const csv=btn("csv-individual","Exporter le mois de cette IDE en CSV");
+    return '<div class="person-tools"><label class="field">IDE affichée<select id="individual-nurse">'+s.nurses.map(n=>opt(n.id,n.name,n.id===person.id)).join("")+'</select></label>'+csv+'</div><div class="person-summary"><strong>'+esc(D.formatMinutes(total))+' de postes</strong><span>'+count.J+' SMUR J</span><span>'+count.N+' SMUR N</span><span>'+count.T+' TIIH</span></div><ul class="agenda" aria-label="'+esc("Planning mensuel de "+person.name)+'">'+list+'</ul>';
   }
   function showEditor(id,day) {
     const {a}=cellInfo(state,id,day);
@@ -969,14 +1349,36 @@
     Object.entries(state.tiih_changes).forEach(([d,t])=>{if(d.startsWith(period)||t?.startsWith(period)) sources.add(d);});
     const rows=[...sources].sort();
     const defaults=rows[0]||all[0];
-    return title("Postes TIIH",picker())+'<div class="cols"><section class="panel"><h2>Adapter une journée</h2><p class="hint">Le TIIH est prévu de 9 h à 16 h 42 les mardis, jeudis et vendredis hors jours fériés.</p><form data-form="tiih"><div class="fields"><label>Date d’origine<input required type="date" name="source" value="'+defaults+'"></label><label>Action<select name="operation" id="tiih-op">'+opt("cancel","Supprimer")+opt("move","Déplacer")+opt("restore","Restaurer")+'</select></label></div><div class="fields" id="target-row" style="display:none"><label>Nouvelle date<input type="date" name="target" value="'+D.addDays(defaults,1)+'"></label></div>'+submit("Appliquer au TIIH")+'</form></section><section class="panel"><h2>Postes du mois</h2><div class="scroll"><table><thead><tr><th>Origine</th><th>Date effective</th><th>État</th></tr></thead><tbody>'+rows.map(d=>{
+    return title("Postes TIIH",picker())+'<div class="cols"><section class="panel"><h2>Adapter une journée</h2><p class="hint">Le TIIH est prévu de 9 h à 16 h 42 les mardis et vendredis hors jours fériés.</p><form data-form="tiih"><div class="fields"><label>Date d’origine<input required type="date" name="source" value="'+defaults+'"></label><label>Action<select name="operation" id="tiih-op">'+opt("cancel","Supprimer")+opt("move","Déplacer")+opt("restore","Restaurer")+'</select></label></div><div class="fields" id="target-row" style="display:none"><label>Nouvelle date<input type="date" name="target" value="'+D.addDays(defaults,1)+'"></label></div>'+submit("Appliquer au TIIH")+'</form></section><section class="panel"><h2>Postes du mois</h2><div class="scroll"><table><thead><tr><th>Origine</th><th>Date effective</th><th>État</th></tr></thead><tbody>'+rows.map(d=>{
       const t=Object.hasOwn(state.tiih_changes,d)?state.tiih_changes[d]:d;
       return '<tr><td>'+esc(shortDay(d))+'</td><td>'+esc(t?shortDay(t):"—")+'</td><td>'+(!t?"Supprimé":d===t?"Maintenu":"Déplacé")+'</td></tr>';
     }).join("")+'</tbody></table></div></section></div>';
   }
   function teamView() {
-    const y=year(), effective=y+"-01-01", oat=state.oat[String(y)];
-    return title("Équipe et règles",picker())+'<div class="cols"><section class="panel"><h2>Quotités de l’équipe</h2><form data-form="team"><label class="field">Date d’effet des quotités<input type="date" required id="effective" name="effective" value="'+effective+'"></label><div class="scroll"><table class="teamtbl"><thead><tr><th>IDE</th><th>Quotité (%)</th></tr></thead><tbody>'+state.nurses.map((n,i)=>'<tr><td><input maxlength="90" required class="tableinput" aria-label="Nom IDE '+(i+1)+'" name="name-'+i+'" value="'+esc(n.name)+'"></td><td><input type="number" min="1" max="100" step="1" name="quota-'+i+'" aria-label="Quotité IDE '+(i+1)+'" placeholder="À saisir" value="'+esc(D.quotaOn(n,effective))+'"></td></tr>').join("")+'</tbody></table></div><div class="bottomaction">'+submit("Enregistrer l’équipe")+'</div></form></section><section class="panel"><h2>Règles et objectif de '+y+'</h2><form data-form="rules"><div class="fields"><label>OAT annuel pour un ETP (h:mm)<input name="oat" pattern="[0-9]{1,5}:[0-5][0-9]" placeholder="À renseigner" value="'+(oat?Math.floor(oat/60)+":"+String(oat%60).padStart(2,"0"):"")+'"></label></div><h3>Périodes de jour et de nuit</h3><div class="fields">'+[["phase_min","Minimum"],["phase_target","Cible"],["phase_max","Maximum"]].map(([k,l])=>'<label>'+l+' (jours)<input type="number" min="2" max="60" step="1" required name="'+k+'" value="'+state.settings[k]+'"></label>').join("")+'</div><label class="field">Calcul des 12 h de repos<select name="rest">'+opt("wall","Horaires affichés",state.settings.rest_clock==="wall")+opt("elapsed","Heures réellement écoulées",state.settings.rest_clock==="elapsed")+'</select></label><div class="fields"><label>Jours fériés locaux supplémentaires<textarea name="holidays" rows="2" placeholder="Une date AAAA-MM-JJ par ligne">'+esc(state.settings.extra_holidays.join("\n"))+'</textarea></label></div><p class="hint">48 h sur 7 jours glissants, 3 jours de travail consécutifs maximum. Samedi et dimanche travaillés ensemble, avec repos le lundi.</p><div class="bottomaction">'+submit("Enregistrer les règles")+'</div></form></section></div>';
+    const y=year(), effective=today.startsWith(period)?today:range()[0], oat=state.oat[String(y)];
+    const nurses=state.nurses.map((n,i)=>`<tr>
+      <td><input maxlength="90" required class="tableinput" aria-label="Nom IDE ${i+1}" name="name-${i}" value="${esc(n.name)}"></td>
+      <td><input type="number" min="1" max="100" step="1" name="quota-${i}" aria-label="Quotité IDE ${i+1}" placeholder="À saisir" value="${esc(D.quotaOn(n,effective))}"></td></tr>`).join("");
+    const phases=[["phase_min","Minimum"],["phase_target","Cible"],["phase_max","Maximum"]].map(([k,l])=>
+      `<label>${l} (jours)<input type="number" min="14" max="21" step="1" required name="${k}" value="${state.settings[k]}"></label>`).join("");
+    return title("Équipe et règles",picker())+`<div class="cols">
+      <section class="panel"><h2>Quotités de l’équipe</h2><form data-form="team">
+      <label class="field">Date d’effet des quotités<input type="date" required id="effective" name="effective" value="${effective}"></label>
+      <div class="actions quota-tools">${btn("all-full","Mettre toute l’équipe à 100 %")}</div>
+      <div class="scroll"><table class="teamtbl"><thead><tr><th>IDE</th><th>Quotité (%)</th></tr></thead><tbody>${nurses}</tbody></table></div>
+      <p class="hint">Les modifications de quotité prennent effet à la date choisie.</p>
+      <div class="bottomaction">${submit("Enregistrer l’équipe")}</div></form></section>
+      <section class="panel"><h2>Règles et objectif de ${y}</h2><form data-form="rules">
+      <div class="fields"><label>OAT annuel pour un ETP (h:mm)<input name="oat" pattern="[0-9]{1,5}:[0-5][0-9]" placeholder="À renseigner" value="${oat?Math.floor(oat/60)+":"+String(oat%60).padStart(2,"0"):""}"></label></div>
+      <h3>Périodes de nuit</h3><p class="hint">Chaque période de nuit dure de 14 à 21 jours, repos compris.</p>
+      <div class="fields">${phases}</div>
+      <label class="field">Calcul des 12 h de repos<select name="rest">${opt("wall","Horaires affichés",state.settings.rest_clock==="wall")}${opt("elapsed","Heures réellement écoulées",state.settings.rest_clock==="elapsed")}</select></label>
+      <div class="fields"><label>Jours fériés locaux supplémentaires<textarea name="holidays" rows="2" placeholder="Une date AAAA-MM-JJ par ligne">${esc(state.settings.extra_holidays.join("\n"))}</textarea></label></div>
+      <h3>Organisation des séries</h3><ul class="rules-list">
+      <li>44 h maximum du lundi au dimanche et 48 h sur toute période de 168 h.</li>
+      <li>Trois postes consécutifs maximum. Le planning privilégie les séries et vise au plus deux jours de repos entre elles. Les repos plus longs sont signalés.</li>
+      <li>Week-end de nuit du vendredi au dimanche. Week-end de jour le samedi et le dimanche, avec le vendredi de préférence. Le lundi qui suit, aucun poste de jour.</li>
+      </ul><div class="bottomaction">${submit("Enregistrer les règles")}</div></form></section></div>`;
   }
   function annualView() {
     const rows=D.annualTotals(state,year());
@@ -994,10 +1396,10 @@
     form.elements.age.value=p?.age||1;
   }
   function filesView() {
-    return title("Sauvegardes")+'<div class="cols"><section class="panel"><h2>Exporter les données</h2><p>Ce fichier JSON conserve les quotités, les absences, les affectations et les règles. Gardez-en une copie pour changer de navigateur ou d’ordinateur.</p><div class="fields">'+btn("export","Télécharger une sauvegarde","primary")+(broken?btn("raw","Télécharger la sauvegarde illisible"):"")+'</div></section><section class="panel"><h2>Restaurer un planning</h2><p>Choisissez une sauvegarde JSON de Planning IDE. Vous pourrez la vérifier avant de remplacer les données de cet espace.</p><form data-form="import"><div class="fields"><label>Sauvegarde JSON<input type="file" required name="backup" accept=".json,application/json"></label></div>'+submit("Examiner la sauvegarde")+'</form></section></div>';
+    return title("Imports et exports")+'<div class="cols"><section class="panel"><h2>Exporter une sauvegarde complète</h2><p>Le JSON conserve les contrats, les postes, les protections, les absences, leurs crédits et les règles. Utilisez-le pour reprendre le planning sur un autre appareil.</p><div class="fields">'+btn("export","Télécharger une sauvegarde JSON","primary")+(broken?btn("raw","Télécharger la sauvegarde illisible"):"")+'</div></section><section class="panel"><h2>Restaurer une sauvegarde complète</h2><p>Examinez le fichier JSON de Planning IDE avant de remplacer les données de cet espace.</p><form data-form="import"><div class="fields"><label>Sauvegarde JSON<input type="file" required name="backup" accept=".json,application/json"></label></div>'+submit("Examiner la sauvegarde")+'</form></section></div>';
   }
   function legacyView() {
-    return '<section class="panel"><h2>Importer les anciens plannings mensuels</h2><p>Choisissez les fichiers planning_AAAA_MM.json de l’ancienne application. Les affectations importées resteront des brouillons à vérifier.</p><form data-form="legacy"><div class="fields"><label>Fichiers mensuels<input type="file" required multiple name="months" accept=".json,application/json"></label></div>'+submit("Examiner les anciens plannings")+'</form></section>';
+    return '<section class="panel"><h2>Ajouter un historique mensuel</h2><p>Choisissez les fichiers <strong>planning_AAAA_MM.json</strong> de l’ancienne application ou les <strong>CSV mensuels exportés par Planning IDE</strong>. Les postes s’ajoutent à l’historique utilisé pour équilibrer les prochains mois.</p><p class="hint">Le CSV reprend les postes et les repos. Une sauvegarde JSON complète contient aussi les absences détaillées, les crédits, les contrats et les protections.</p><form data-form="legacy"><div class="fields"><label>Fichiers mensuels JSON ou CSV<input type="file" required multiple name="months" accept=".json,.csv,application/json,text/csv"></label></div>'+submit("Examiner les anciens plannings")+'</form></section>';
   }
   function download(name,body,type) {
     const url=URL.createObjectURL(new Blob([body],{type}));
@@ -1013,7 +1415,52 @@
     };
     download(name,"\uFEFF"+rows.map(row=>row.map(quote).join(";")).join("\r\n"),"text/csv;charset=utf-8");
   }
-  let stagedImport=null;
+  let stagedImport=null, historyFiles=null, historyNames=[];
+  function showImportDialog(content) {
+    dialog.innerHTML=content;
+    if(!dialog.open) dialog.showModal();
+  }
+  function importQuotaField() {
+    return '<div class="fields"><label>Passer toute l’équipe à 100 % à compter du <small>(facultatif)</small><input type="date" id="import-effective" min="1900-01-01" max="2199-12-31" aria-describedby="import-effective-hint"></label></div><p id="import-effective-hint" class="hint">Laissez la date vide pour reprendre les contrats tels quels. Si vous indiquez une date, le taux de 100 % s’appliquera jusqu’au prochain changement déjà prévu pour chaque IDE. Vous pourrez aussi modifier les quotités dans Équipe et règles.</p>';
+  }
+  function prepareHistory(files) {
+    const names=new Set();
+    historyFiles=files.map(file=>{
+      let rows;
+      try {rows=JSON.parse(file.content.replace(/^\uFEFF/,""));}
+      catch {throw Error("JSON illisible dans "+file.name+".");}
+      if(!rows || typeof rows!=="object" || Array.isArray(rows)) throw Error("Planning mensuel invalide dans "+file.name+".");
+      Object.keys(rows).forEach(n=>names.add(n));
+      return {...file,rows};
+    });
+    historyNames=[...names].sort((a,b)=>a.localeCompare(b,"fr"));
+    if(historyNames.every(n=>state.nurses.some(person=>person.name===n))) {
+      previewHistory();
+      return;
+    }
+    const mapping=historyNames.map((name,i)=>{
+      const existing=state.nurses.find(n=>n.name===name);
+      return '<tr><th scope="row">'+esc(name)+'</th><td><select name="map-'+i+'" aria-label="'+esc("Associer "+name)+'">'+
+        (existing?"":opt("","Choisir une IDE",true))+state.nurses.map(n=>opt("id:"+n.id,n.name,n.id===existing?.id)).join("")+
+        (existing?"":opt("add","Créer « "+name+" »"))+'</select></td></tr>';
+    }).join("");
+    showImportDialog('<form data-form="history-map"><h2 id="dialog-title">Associer les noms de l’historique</h2><p>Pour chaque nom du fichier, choisissez l’IDE correspondante dans votre équipe ou créez une nouvelle fiche.</p><div class="scroll"><table><thead><tr><th>Nom du fichier</th><th>IDE de l’équipe</th></tr></thead><tbody>'+mapping+'</tbody></table></div><p role="alert" class="issueerror"></p><div class="actions">'+btn("close","Annuler")+submit("Examiner l’import")+'</div></form>');
+  }
+  function previewHistory(mapping=new Map()) {
+    const files=historyFiles.map(file=>{
+      const renamed=Object.create(null);
+      for(const [original,days] of Object.entries(file.rows)) {
+        const name=mapping.get(original)??original;
+        if(Object.hasOwn(renamed,name)) throw Error("Deux lignes du fichier "+file.name+" sont associées à "+name+".");
+        renamed[name]=days;
+      }
+      return {name:file.name,content:JSON.stringify(renamed)};
+    });
+    const result=D.importLegacyFiles(state,files);
+    stagedImport=result;
+    const warnings=[...historyFiles.flatMap(file=>file.warnings??[]),...result.warnings];
+    showImportDialog('<h2 id="dialog-title">Importer cet historique ?</h2><p>'+files.length+' fichier(s) · '+result.state.nurses.length+' IDE dans l’équipe après import.</p><ul>'+warnings.map(text=>'<li>'+esc(text)+'</li>').join("")+'</ul>'+importQuotaField()+'<p role="alert" class="issueerror"></p><div class="actions">'+btn("close","Annuler")+btn("restore-data","Importer les plannings","primary")+'</div>');
+  }
   async function submitForm(form) {
     const f=new FormData(form), get=k=>String(f.get(k)??"");
     const candidate=clone(state);
@@ -1034,7 +1481,9 @@
         candidate.nurses.forEach((n,i)=>{
           const name=get("name-"+i).trim(), raw=get("quota-"+i);
           if(!name) throw Error("Chaque IDE doit avoir un nom.");
-          n.name=name; D.setContract(n,effective,raw===""?null:Number(raw));
+          const quota=raw===""?null:Number(raw);
+          n.name=name;
+          if(quota!==D.quotaOn(n,effective)) D.setContract(n,effective,quota);
         });
         if(new Set(candidate.nurses.map(n=>n.name)).size!==candidate.nurses.length) throw Error("Choisissez un nom distinct pour chaque IDE.");
         save(candidate,"Équipe enregistrée."); break;
@@ -1073,17 +1522,29 @@
       case "legacy": {
         const files=f.getAll("months");
         if(!files.length || files.reduce((n,file)=>n+file.size,0)>20*1024*1024) throw Error("Sélectionnez des plannings mensuels de moins de 20 Mo au total.");
-        const result=D.importLegacyFiles(state,await Promise.all(files.map(async file=>({name:file.name,content:await file.text()}))));
-        stagedImport=result.state;
-        dialog.innerHTML='<h2 id="dialog-title">Importer les anciens plannings ?</h2><p>'+files.length+' fichier(s) · '+stagedImport.nurses.length+' IDE dans l’équipe après import.</p><ul>'+result.warnings.map(text=>'<li>'+esc(text)+'</li>').join("")+'</ul><p role="alert" class="issueerror"></p><div class="actions">'+btn("close","Annuler")+btn("restore-data","Importer les plannings","primary")+'</div>';
-        dialog.showModal(); break;
+        const data=await Promise.all(files.map(async file=>{
+          const value={name:file.name,content:await file.text()};
+          return /\.csv$/i.test(file.name)?globalThis.PlannerCSV.toLegacyFile(value):value;
+        }));
+        prepareHistory(data);
+        break;
+      }
+      case "history-map": {
+        const mapping=new Map();
+        historyNames.forEach((name,i)=>{
+          const id=get("map-"+i);
+          if(!id) throw Error("Choisissez une IDE pour "+name+".");
+          mapping.set(name,id==="add"?name:nameOf(id.slice(3)));
+        });
+        previewHistory(mapping); break;
       }
       case "import": {
+        historyFiles=null;
         const file=f.get("backup");
         if(!file?.size||file.size>20*1024*1024) throw Error("Choisissez un fichier JSON de moins de 20 Mo.");
-        const value=JSON.parse(await file.text()); D.validateState(value);
-        stagedImport=value;
-        dialog.innerHTML='<h2 id="dialog-title">Restaurer cette sauvegarde ?</h2><p>'+value.nurses.length+' IDE · '+Object.keys(value.assignments).length+' dates · '+value.absences.length+' absences</p><p>Cette sauvegarde remplacera les données de '+(demo?"l’équipe fictive":"votre équipe")+'.</p><p class="issueerror" role="alert"></p><div class="actions">'+btn("close","Annuler")+btn("restore-data","Remplacer les données","primary")+'</div>';
+        const value=D.migrateState(JSON.parse((await file.text()).replace(/^\uFEFF/,"")));
+        stagedImport={state:value,placeholderContractIds:[]};
+        dialog.innerHTML='<h2 id="dialog-title">Restaurer cette sauvegarde ?</h2><p>'+value.nurses.length+' IDE · '+Object.keys(value.assignments).length+' dates · '+value.absences.length+' absences</p><p>Cette sauvegarde remplacera les données de '+(demo?"l’équipe fictive":"votre équipe")+'.</p>'+importQuotaField()+'<p class="issueerror" role="alert"></p><div class="actions">'+btn("close","Annuler")+btn("restore-data","Remplacer les données","primary")+'</div>';
         dialog.showModal(); break;
       }
     }
@@ -1096,7 +1557,7 @@
       try {
         await new Promise(resolve=>setTimeout(resolve,40));
         const result=E.generate(state,year(),month(),{timeLimitMs:2500});
-        if(result.candidate) {proposal=result; week=0; notify();} else notify(result.message,true);
+        if(result.candidate) {proposal=result; week=-1; notify();} else notify(result.message,true);
       } finally {busy=false; render();}
       return;
     }
@@ -1104,7 +1565,14 @@
       case "page": page=button.dataset.page; notify(); render(); break;
       case "prev": setPeriod(D.addDays(range()[0],-1).slice(0,7)); break;
       case "next": setPeriod(D.addDays(range()[1],1).slice(0,7)); break;
+      case "planning-mode": planningMode=button.dataset.mode; render(); break;
       case "week": week=Number(button.dataset.week); render(); break;
+      case "all-full": {
+        const form=button.closest("form");
+        state.nurses.forEach((n,i)=>{form.elements["quota-"+i].value="100";});
+        notify("Les quotités sont prêtes. Enregistrez l’équipe pour appliquer la date d’effet choisie.");
+        break;
+      }
       case "demo": switchSpace(true); break;
       case "exit-demo": switchSpace(false); break;
       case "accept": if(proposal) save(clone(proposal.candidate),"Proposition acceptée et enregistrée."); break;
@@ -1127,11 +1595,37 @@
       case "raw": download("planning-ide-a-recuperer.json",stored,"application/json"); break;
       case "restore-data": {
         if(!stagedImport) throw Error("Choisissez une sauvegarde.");
-        save(clone(stagedImport),"Sauvegarde restaurée.",{replace:true}); stagedImport=null; dialog.close(); break;
+        const input=dialog.querySelector("#import-effective");
+        if(!input.reportValidity()) break;
+        const restored=clone(stagedImport.state), effective=input.value;
+        if(effective) {
+          const placeholders=new Set(stagedImport.placeholderContractIds);
+          for(const nurse of restored.nurses) {
+            // These new identities have only the default contract of the template slot.
+            if(placeholders.has(nurse.id)) nurse.contracts=[];
+            D.setContract(nurse,effective,100);
+          }
+        }
+        let message=historyFiles?"Historique importé. Consultez la répartition des postes dans Planning.":"Sauvegarde restaurée.";
+        if(effective) message+=" Quotités à 100 % au "+shortDay(effective)+".";
+        save(restored,message,{replace:true}); stagedImport=null; dialog.close(); break;
       }
-      case "csv": {
-        const value=proposal?.candidate||state;
-        csv("planning-"+period+".csv",[["IDE",...days()],...value.nurses.map(n=>[n.name,...days().map(d=>cellInfo(value,n.id,d).label)])]); break;
+      case "csv":
+      case "csv-individual": {
+        const value=proposal?.candidate||state, all=days();
+        const one=action==="csv-individual";
+        const nurses=one?value.nurses.filter(n=>n.id===selectedNurseId):value.nurses;
+        const suffix=one?"-"+nurses[0].name.replace(/[^\p{L}\p{N}]+/gu,"-").slice(0,60):"";
+        csv("planning-"+period+suffix+".csv",[["IDE",...all],...nurses.map(n=>[n.name,...all.map(d=>cellInfo(value,n.id,d).label)])]);
+        break;
+      }
+      case "export-balance": {
+        const rows=balanceRows(proposal?.candidate||state);
+        csv("repartition-"+period+".csv",[
+          ["IDE","SMUR J antérieurs","SMUR N antérieurs","SMUR J du mois","SMUR N du mois","TIIH du mois","Cumul SMUR J","Cumul SMUR N","Jours isolés du mois","Nuits isolées du mois"],
+          ...rows.map(r=>[r.name,r.pastJ,r.pastN,r.J,r.N,r.T,r.pastJ+r.J,r.pastN+r.N,r.aloneJ,r.aloneN])
+        ]);
+        break;
       }
       case "export-year": {
         const rows=D.annualTotals(state,year());
@@ -1139,6 +1633,7 @@
       }
     }
   }
+  dialog.addEventListener("close",()=>{stagedImport=null;historyFiles=null;historyNames=[];});
   document.addEventListener("click",e=>{const b=e.target.closest("button[data-act]"); if(b) act(b).catch(infoError);});
   document.addEventListener("submit",e=>{if(e.target.dataset.form){e.preventDefault();submitForm(e.target).catch(infoError);}});
   document.addEventListener("change",e=>{
@@ -1146,6 +1641,7 @@
       const t=e.target;
       if(t.form?.dataset.form==="phase" && ["anchor","nurse"].includes(t.name)) syncPhase();
       if(t.id==="period"&&t.value) setPeriod(t.value);
+      if(t.id==="individual-nurse") {selectedNurseId=t.value; render();}
       if(t.id==="effective"&&t.value) state.nurses.forEach((n,i)=>{t.form.elements["quota-"+i].value=D.quotaOn(n,t.value)??"";});
       if(t.id==="tiih-op") {document.getElementById("target-row").style.display=t.value==="move"?"":"none"; t.form.elements.target.required=t.value==="move";}
       if(t.id==="absence-mode") {
