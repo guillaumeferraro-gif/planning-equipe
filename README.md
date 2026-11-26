@@ -60,7 +60,11 @@ La durée du poste compte dans le temps de travail de l’IDE affectée. Le CSV 
 
 Dans **Planning**, cliquez sur **Modifier une journée** ou sur la date en tête de la grille d’équipe. Choisissez les IDE pour le SMUR J, le SMUR N et, si le poste est ouvert, le TIIH. Un poste ouvert sans titulaire apparaît comme **À pourvoir**. Pour conserver votre choix lors d’une prochaine génération, cochez **Verrouiller les cases modifiées pour les prochains calculs**. Cliquez sur **Enregistrer cette journée**. Cette correction porte uniquement sur les affectations de cette date. Pour modifier une seule case, cliquez directement sur celle de l’IDE concernée.
 
-Pour préparer un mois complet, utilisez **Générer une proposition**. Par défaut, **Conserver la proposition** enregistre uniquement le mois affiché. Si vous voulez également enregistrer les affectations proposées au-delà du dernier jour, cochez **Inclure l’anticipation après ce mois** avant de générer la proposition.
+## Refaire une proposition ou effacer un mois
+
+Pour recalculer un mois avec les règles actuelles, choisissez-le dans **Planning** et cliquez sur **Faire une autre proposition**. Ce bouton est disponible depuis un mois déjà planifié ou une proposition en cours. Pour un mois vierge, commencez par **Générer une proposition**. Vous pouvez examiner plusieurs répartitions avant de cliquer sur **Conserver la proposition**. Si le calcul ne trouve aucune répartition différente des gardes, le planning en place reste disponible. Si des week-ends consécutifs du mois voisin bloquent la génération, l’alerte indique les dates et propose d’ouvrir ce mois. Par défaut, l’enregistrement porte sur le mois affiché. Pour enregistrer aussi les affectations proposées après le dernier jour, cochez **Inclure l’anticipation après ce mois** avant le calcul.
+
+Pour repartir d’un mois vide, choisissez **Effacer le mois…**. L’aperçu indique les affectations du mois concernées pour toute l’équipe. Par défaut, les cases et périodes verrouillées ainsi que les postes confirmés sont protégés. Pour les effacer aussi, cochez **Inclure les cases et les périodes verrouillées** ou **Inclure les postes confirmés**, selon votre besoin. Relisez l’aperçu puis cliquez sur **Confirmer l’effacement**. Les autres mois, l’effectif, les contrats, les absences, les règles et les TIIH prévus sont conservés. Pour revenir sur cette action, cliquez immédiatement sur **Annuler l’effacement**, avant de changer de mois ou de modifier le planning.
 
 ## Importer un historique ou exporter le planning
 
