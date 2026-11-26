@@ -24,7 +24,54 @@ function ouvrirPlanning() {
   const html=reply.getContentText('UTF-8');
   if (!/^\s*<!doctype html>/i.test(html) || planningDigest_(html)!==PLANNING_HTML_SHA256_)
     throw Error('L’intégrité de la version publiée du planning n’a pas pu être vérifiée.');
-  SpreadsheetApp.getUi().showModalDialog(HtmlService.createHtmlOutput(html).setWidth(1320).setHeight(850),'Planning IDE');
+  const dialog=HtmlService.createHtmlOutput(planningDialogHtml_(html)).setWidth(1320).setHeight(850);
+  SpreadsheetApp.getUi().showModalDialog(dialog,'Planning IDE');
+}
+
+// Only the pinned, digest-verified public client is passed here. Keep its JS
+// bytes out of HtmlService's inline-script rewriting and in the native frame.
+function planningDialogHtml_(html) {
+  const scripts=[];
+  const shell=html.replace(/<script>([\s\S]*?)<\/script>/gi,function(block,source) {
+    scripts.push(source);
+    return '';
+  });
+  if (!scripts.length || /<script\b/i.test(shell) || !/<\/body>/i.test(shell))
+    throw Error('La structure de l’application publiée est incompatible avec la fenêtre Google Sheets.');
+  const encoded=Utilities.base64Encode(scripts.join('\n;\n'),Utilities.Charset.UTF_8);
+  const payload=encoded.match(/.{1,8192}/g).join('\n');
+  const boot=[
+    '<p id="planning-boot-status" role="status" class="status" data-error="Le planning n’a pas pu démarrer. Fermez cette fenêtre puis rouvrez-la depuis le menu Planning IDE.">Ouverture du planning…</p>',
+    '<div id="planning-bundle" hidden>',payload,'</div>',
+    '<script>',
+    '(function () {',
+    '  var note = document.getElementById("planning-boot-status");',
+    '  var failed = false;',
+    '  function fail(error) {',
+    '    failed = true;',
+    '    note.setAttribute("role", "alert");',
+    '    note.className = "status error";',
+    '    note.textContent = note.getAttribute("data-error") + (error && error.message ? " " + error.message : "");',
+    '  }',
+    '  window.addEventListener("error", fail);',
+    '  try {',
+    '    var data = document.getElementById("planning-bundle");',
+    '    var raw = atob(data.textContent);',
+    '    data.remove();',
+    '    var bytes = new Uint8Array(raw.length);',
+    '    for (var i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);',
+    '    var script = document.createElement("script");',
+    '    if (document.currentScript && document.currentScript.nonce) script.nonce = document.currentScript.nonce;',
+    '    script.textContent = new TextDecoder("utf-8", {fatal:true}).decode(bytes);',
+    '    document.head.appendChild(script);',
+    '    if (!failed && !document.getElementById("app").firstElementChild) fail();',
+    '    if (!failed) note.remove();',
+    '  } catch (error) { fail(error); }',
+    '  finally { window.removeEventListener("error", fail); }',
+    '})();',
+    '</script>'
+  ].join('\n');
+  return shell.replace(/<\/body>/i,function() {return boot+'\n</body>';});
 }
 
 function planningLocked_(callback) {
