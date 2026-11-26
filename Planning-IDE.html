@@ -19,6 +19,13 @@
 @media(min-width:851px){.tiih-cols{grid-template-columns:minmax(250px,.72fr) minmax(360px,1.5fr)}}
 .grid .X,.agenda-label.X{color:#5c6c69;background:#e9edeb;font-weight:400}.teamtbl td:first-child{width:47%}.teamtbl td:nth-child(2) input{max-width:6.2em;width:100%}.teamtbl td:last-child{font-size:.88rem}.cols>.panel{min-width:0}
 .sheets-guide{margin-bottom:1rem;color:var(--muted);font-size:.9rem}.sheets-guide a{color:var(--teal)}#cloud-controls:not(:empty){margin-top:.7rem}.sync-error{background:#fcefe8;border-color:#e6c2b6}
+.tiih-modes{display:inline-flex;margin-bottom:.9rem}.tiih-period{padding:.7rem 0;border-bottom:1px solid var(--line)}.tiih-period fieldset{border:0;padding:0;margin:.5rem 0 .8rem}.tiih-period fieldset label{margin-right:.65rem}.tiih-period legend{font-size:.85rem;color:var(--muted)}.selection-count{font-weight:650;color:var(--teal);margin-top:.8rem}.tiih-cols input[data-pick-tiih]{width:17px;height:17px;vertical-align:middle}.tiih-cols #tiih-picked{margin:.35rem 0 .8rem;font-size:.88rem}.tiih-cols #tiih-picked p{max-height:7rem;overflow:auto}.tiih-preview small{display:block}.tiih-preview .scroll{margin-top:.75rem;max-height:48vh}.tiih-preview th,.tiih-preview td{min-width:6.5rem}.tiih-preview h2+p{margin-top:.5rem}dialog:has(.tiih-preview){max-width:760px}
+.generation-scope{display:flex;justify-content:flex-end;margin:-.35rem 0 1rem;color:var(--muted);font-size:.86rem}
+.generation-scope input{vertical-align:middle}
+.grid th .date-edit{display:block;width:100%;padding:.15rem 0;background:transparent;border:0;color:inherit;font:inherit;border-radius:4px}
+.grid th .date-edit:hover,.grid th .date-edit:focus-visible{background:var(--wash);color:var(--teal)}
+.day-preview{font-size:.88rem}.day-preview ul{margin:.4rem 0;padding-left:1.3rem}
+@media print{.generation-scope{display:none}}
 </style>
 </head>
 <body>
@@ -301,8 +308,8 @@
     if (state.tiih_history_durations) delete state.tiih_history_durations[day];
   }
   function changeTiih(state, source, target = null, restore = false) {
-    // Permit restoring a source suppressed before local holidays were edited.
-    requireValue(defaultTiih(state,source) || (restore && Object.hasOwn(state.tiih_changes,source)),
+    // A saved occurrence can still be managed after the local holiday list changes.
+    requireValue(defaultTiih(state,source) || Object.hasOwn(state.tiih_changes,source),
       "Choisir une date d’origine prévue pour le TIIH.");
     const changes = {...state.tiih_changes};
     const previous = Object.hasOwn(changes,source) ? changes[source] : source;
@@ -336,6 +343,84 @@
     }
     if (!restore) changes[source] = destination;
     state.tiih_changes = changes;
+  }
+
+  function previewTiihBatch(state,sources,operation,options={}) {
+    requireValue(Array.isArray(sources) && sources.length>0,"Sélectionnez au moins un TIIH.");
+    const origins=[...new Set(sources)].sort();
+    requireValue(plain(options) && ["duration","normal","cancel","move","restore"].includes(operation),
+      "Action de groupe TIIH inconnue.");
+    const timing=operation==="duration" || operation==="normal";
+    const minutes=operation==="normal" ? SHIFT_MINUTES.T : options.minutes;
+    if (timing) requireValue(integer(minutes,1,maxTiihMinutes),
+      "La durée du TIIH doit être comprise entre 1 minute et 48 heures.");
+    if (operation==="move") {
+      if (options.targets!==undefined) {
+        requireValue(plain(options.targets) && options.shiftDays===undefined &&
+          Object.keys(options.targets).length===origins.length && origins.every(d=>Object.hasOwn(options.targets,d)),
+          "Indiquez exactement une destination par date d’origine sélectionnée.");
+      } else requireValue(Number.isSafeInteger(options.shiftDays),"Indiquez un décalage en jours entiers.");
+    }
+    const destinations=new Set();
+    const changes=origins.map(source=>{
+      serial(source);
+      requireValue(defaultTiih(state,source) || Object.hasOwn(state.tiih_changes,source),
+        "Aucune occurrence TIIH d’origine le "+source+".");
+      const from=tiihDay(state,source),oldMinutes=getTiihDuration(state,source);
+      requireValue(!from || tiihSource(state,from)===source,
+        "Une autre occurrence TIIH occupe déjà le "+from+" (origine "+source+").");
+      let to=from;
+      if (timing) requireValue(from,"Le TIIH du "+source+" est supprimé. Restaurez-le avant de modifier sa durée.");
+      if (operation==="cancel") to=null;
+      if (operation==="restore") to=source;
+      if (operation==="move") {
+        if (options.targets) to=options.targets[source];
+        else {
+          const offset=serial(source)+options.shiftDays;
+          requireValue(integer(offset,serial("0000-01-01"),serial("9999-12-31")),
+            "Date de destination hors calendrier pour le "+source+".");
+          to=isoDay(offset);
+        }
+        serial(to);
+      }
+      if (to && !timing) {
+        requireValue(!isHoliday(state,to),"Le TIIH est fermé le jour férié du "+to+" (origine "+source+").");
+        requireValue(to!==source || defaultTiih(state,source),
+          "Aucun TIIH récurrent ne peut être restauré à la date d’origine du "+source+".");
+        requireValue(!destinations.has(to),"Plusieurs TIIH du lot ont la même destination le "+to+".");
+        destinations.add(to);
+      }
+      const newMinutes=timing?minutes:oldMinutes,changed=from!==to || oldMinutes!==newMinutes;
+      if (changed && from) requireValue(!hasProtectedTiih(state,from),
+        "Le TIIH du "+from+" est verrouillé ou confirmé (origine "+source+").");
+      const released=from && from!==to ? Object.entries(state.assignments[from]??{})
+        .filter(([,a])=>a.shift==="T").map(([id])=>id) : [];
+      return {source,from,to,oldMinutes,newMinutes,changed,released};
+    });
+    const candidate=JSON.parse(JSON.stringify(state));
+    const affected=changes.filter(item=>item.changed);
+    if (timing) {
+      for (const item of affected) setTiihDuration(candidate,item.from,item.newMinutes);
+    } else {
+      // Release all previous dates first. Two selected occurrences can swap
+      // dates, or move in a chain, without displacing any unselected shift.
+      for (const item of affected) if (item.from) changeTiih(candidate,item.source,null);
+      for (const item of affected) if (item.to) {
+        try {changeTiih(candidate,item.source,item.to,item.source===item.to);}
+        catch (error) {throw new Error(item.source+" → "+item.to+" : "+error.message);}
+      }
+    }
+    return {state:candidate,changes,warnings:[]};
+  }
+
+  function applyTiihBatch(state,sources,operation,options={}) {
+    const result=previewTiihBatch(state,sources,operation,options);
+    if (result.changes.some(item=>item.changed)) {
+      // Commit only after a complete, successful preview.
+      for (const key of ["tiih_changes","tiih_durations","tiih_history_durations","assignments"])
+        if (Object.hasOwn(result.state,key)) state[key]=result.state[key];
+    }
+    return {...result,state};
   }
 
   function localParts(epochMinute) {
@@ -841,7 +926,7 @@
   }
   globalThis.PlannerDomain=Object.freeze({SHIFT_MINUTES,SHIFT_LABELS,ABSENCE_KINDS,dates,addDays,weekday,
     monthBounds,formatMinutes,parseDuration,newState,quotaOn,setContract,isHoliday,defaultTiih,tiihRequired,
-    changeTiih,shiftInterval,absentFor,absenceOn,setAbsence,creditMinutes,validateState,annualTotals,validateSchedule,
+    changeTiih,previewTiihBatch,applyTiihBatch,shiftInterval,absentFor,absenceOn,setAbsence,creditMinutes,validateState,annualTotals,validateSchedule,
     importLegacyFiles,calendarWeekBounds,migrateState,phaseBounds,tiihSource,tiihDay,
     getTiihDuration,setTiihDuration,shiftMinutes,tiihWallEnd,isActive,activeOn:isActive,baseQuotaOn,
     setQuotaPeriod,removeQuotaPeriod,addNurse,nurseExitImpact,setNurseExit});
@@ -928,15 +1013,20 @@
     }
   }
 
-  function prepare(state, year, month, D, reopen=new Set()) {
+  function prepare(state, year, month, D, includeLookahead, reopen=new Set()) {
     D.validateState(state);
     if (!Number.isInteger(year) || year < 1900 || year > 2200 ||
         !Number.isInteger(month) || month < 1 || month > 12)
       throw Error("Choisir un mois et une année valides.");
     if (!state.settings.rest_clock) throw Error("Préciser la convention des 12 h de repos.");
     const [start, end] = D.monthBounds(year, month);
-    let horizon = D.addDays(end, 18);
-    if ([4, 5].includes(D.weekday(horizon))) horizon = D.addDays(horizon, 6-D.weekday(horizon));
+    let horizon = end;
+    if (includeLookahead) {
+      horizon = D.addDays(end, 18);
+      if ([4, 5].includes(D.weekday(horizon))) horizon = D.addDays(horizon, 6-D.weekday(horizon));
+    }
+    // The dates on either side are available to rest, hours, weekend and
+    // phase checks. Only start..horizon can ever be written to the proposal.
     const days = D.dates(D.addDays(start, -priorDays), D.addDays(horizon, priorDays));
     const endIndex = days.indexOf(horizon);
     const monthEnd=days.indexOf(end);
@@ -963,7 +1053,8 @@
       const active=days.map(day=>D.isActive(nurse,day));
       const quotas=days.map((day,i)=>active[i]?D.quotaOn(nurse,day):0);
       if (quotas.slice(priorDays,endIndex+1).some(q => q == null))
-        throw Error("Renseigner les quotités pour le mois et son anticipation.");
+        throw Error(includeLookahead?"Renseigner les quotités pour le mois et son anticipation.":
+          "Renseigner les quotités des IDE actives pendant le mois sélectionné.");
       const years = [...new Set(days.slice(priorDays, endIndex + 1).map(day => day.slice(0, 4)))];
       for (const y of years) {
         const period = days.slice(priorDays, endIndex + 1).filter(d => d.startsWith(y));
@@ -1056,9 +1147,10 @@
           impossible = "Un TIIH de week-end doit pouvoir être couvert au même poste samedi et dimanche.";
         const fixed = nurses.filter(n => group.some(j => n.work[j] === code));
         if (fixed.length > 1) impossible = "Plusieurs IDE sont protégées pour le même bloc de week-end du "+days[anchor]+".";
-        const candidates = nurses.filter(n => (!fixed.length || n === fixed[0]) &&
-          group.every(j => n.available[j][code] && (n.work[j]===code ||
-            (!n.work[j] && (n.editable[j] || (!n.known[j] && j<priorDays))))));
+        const candidates = nurses.filter(n => (!fixed.length || n === fixed[0]) && group.every(j => {
+          const openBoundary = (j<priorDays || j>endIndex) && !n.known[j];
+          return n.available[j][code] && (n.work[j]===code || (!n.work[j] && (n.editable[j] || openBoundary)));
+        }));
         if (!candidates.length) impossible = "Aucune IDE disponible pour "+D.SHIFT_LABELS[code]+" le "+days[i]+".";
         if (!indices.every(j => fixed[0]?.work[j] === code))
           tasks.push({i, code, indices, candidates});
@@ -1343,11 +1435,12 @@
     return {candidate,isolated,isolatedDays,score};
   }
 
-  function generate(state, year, month, {timeLimitMs=1800, seed=Date.now()}={}) {
+  function generate(state, year, month, {timeLimitMs=1800, seed=Date.now(), includeLookahead=false}={}) {
     const D=globalThis.PlannerDomain;
+    const forecast=includeLookahead===true;
     const deadline=now()+Math.max(100,Math.min(15000,Number(timeLimitMs)||1800));
     let ctx;
-    try { ctx=prepare(state,year,month,D); }
+    try { ctx=prepare(state,year,month,D,forecast); }
     catch(e) {return result("invalid_input",String(e.message||e));}
     const random=randomGenerator(seed);
     let best=null, repaired=false;
@@ -1366,12 +1459,14 @@
         firstSuccess??=now();
       }
       if (best || !retry) break;
-      ctx=prepare(state,year,month,D,ctx.repairDates);
+      ctx=prepare(state,year,month,D,forecast,ctx.repairDates);
       repaired=true;
     }
     if (!best) return result("unknown","Aucune proposition trouvée dans le temps de recherche. Vérifiez les absences, les postes protégés et les besoins TIIH. Vous pouvez relancer la recherche.");
-    const update=repaired?" Des affectations prévisionnelles autour des dates en conflit ont été recalculées.":"";
-    return {...result("feasible","Proposition contrôlée, avec anticipation jusqu’au "+ctx.horizon+"."+update,
+    let message="Proposition contrôlée du "+ctx.start+" au "+ctx.end+".";
+    if (forecast) message="Proposition contrôlée, avec anticipation jusqu’au "+ctx.horizon+".";
+    if (repaired) message+=" Des affectations prévisionnelles autour des dates en conflit ont été recalculées.";
+    return {...result("feasible",message,
       best.candidate,ctx.horizon,best.isolated), isolatedDays:best.isolatedDays};
   }
   globalThis.PlannerEngine=Object.freeze({generate});
@@ -1686,6 +1781,345 @@
 
 </script>
 <script>
+/* Reassign the roles of one civil date as a single change, including swaps. */
+(() => {
+  "use strict";
+  const D = globalThis.PlannerDomain;
+  const roles = ["J","N","T"];
+  const owners = (row,role) => Object.keys(row).filter(id=>row[id].shift===role);
+  const protectedCell = cell => cell?.locked || cell?.confirmed;
+
+  function edit(state,day,choices,lock) {
+    const old = state.assignments[day] || {}, next = {...old}, wanted = new Map();
+    for (const role of roles) {
+      const prior = owners(old,role);
+      const value = choices[role] ?? "keep";
+      let ids = prior;
+      if (value!=="keep") {
+        if (value!=="vacant" && !value.startsWith("id:")) throw Error("Titulaire non reconnu.");
+        ids = value==="vacant" ? [] : [value.slice(3)];
+      }
+      for (const id of ids) {
+        if (wanted.has(id)) throw Error("Une IDE ne peut pas occuper deux postes à la même date. Vérifiez les titulaires.");
+        wanted.set(id,role);
+        if (old[id]?.shift===role) continue;
+        const nurse = state.nurses.find(n=>n.id===id);
+        if (!nurse || !D.isActive(nurse,day)) throw Error("L’IDE doit faire partie de l’effectif à cette date.");
+        if (role==="T" && !D.tiihRequired(state,day)) throw Error("Le TIIH est fermé à cette date.");
+        if (D.absentFor(state,id,day,role)) throw Error(nurse.name+" est en absence pendant ce poste.");
+      }
+    }
+    const changes = [];
+    for (const id of new Set([...Object.keys(old),...wanted.keys()])) {
+      const before = old[id]?.shift || "-", after = wanted.get(id) || "-";
+      if (before===after) continue;
+      const nurse = state.nurses.find(n=>n.id===id);
+      if (protectedCell(old[id])) throw Error("La case de "+nurse.name+" est verrouillée ou confirmée. Retirez sa protection dans sa fiche pour la modifier.");
+      next[id]={shift:after,locked:lock,confirmed:false};
+      changes.push({id,name:nurse.name,before,after});
+    }
+    if (!changes.length) return {candidate:state,changes};
+    const reviewed = [...new Set([...(state.reviewed[day]||[]),...changes.map(c=>c.id)])];
+    return {changes,candidate:{...state,assignments:{...state.assignments,[day]:next},
+      reviewed:{...state.reviewed,[day]:reviewed}}};
+  }
+  globalThis.PlannerDayEditor=Object.freeze({edit,owners,protectedCell});
+})();
+
+</script>
+<script>
+/* Standalone A4 print layout. Drawing and PDF creation stay in the browser. */
+(() => {
+  "use strict";
+  const D=globalThis.PlannerDomain;
+  const LANDSCAPE=[841.89,595.28], PORTRAIT=[595.28,841.89], margin=34;
+  const face='Arial, "Noto Sans", "Noto Sans CJK JP", sans-serif';
+  const colors={ink:"#203337",muted:"#4D6468",line:"#CBD9D6",light:"#EEF3F1",teal:"#165E57",white:"#FFFFFF",
+    weekend:"#DEEAE6",weekBody:"#F4F7F6",J:"#F9EBCA",N:"#E7E6F4",T:"#DCEFE7",A:"#F8E5DE",X:"#E9ECEB"};
+  const labels={J:"SMUR jour",N:"SMUR nuit",T:"TIIH",A:"Absence",R:"Repos","?":"Non renseigné",X:"Hors effectif"};
+  const byteText=new TextEncoder();
+  const num=x=>Number(x.toFixed(4)).toString();
+  const rgb=hex=>[1,3,5].map(i=>num(parseInt(hex.slice(i,i+2),16)/255)).join(" ");
+  const hexByte=n=>n.toString(16).padStart(2,"0");
+  const clean=text=>String(text).normalize("NFC").replace(/[\r\n\t]+/g," ").replace(/[\u0000-\u001f\u007f]/g,"").replace(/\u202f/g," ");
+  const winExtra=new Map(Array.from("€‚ƒ„…†‡ˆ‰Š‹ŒŽ‘’“”•–—˜™š›œžŸ").map((c,i)=>[c,[128,130,131,132,133,134,135,136,137,138,139,140,142,145,146,147,148,149,150,151,152,153,154,155,156,158,159][i]]));
+  function winAnsi(text) {
+    let out="";
+    for(const c of text) {
+      const n=c.codePointAt(0);
+      const b=n>=32&&n<=126 || n>=160&&n<=255?n:winExtra.get(c);
+      if(b===undefined) return null;
+      out+=hexByte(b);
+    }
+    return out;
+  }
+  const unicodeHex=text=>text.split("").map(c=>c.charCodeAt(0).toString(16).padStart(4,"0")).join("");
+  const monthFmt=new Intl.DateTimeFormat("fr-FR",{month:"long",year:"numeric",timeZone:"UTC"});
+  const dayFmt=new Intl.DateTimeFormat("fr-FR",{weekday:"long",day:"numeric",month:"long",timeZone:"UTC"});
+  const stampFmt=new Intl.DateTimeFormat("fr-FR",{day:"2-digit",month:"2-digit",year:"numeric",hour:"2-digit",minute:"2-digit",timeZone:"Europe/Paris"});
+  const capital=s=>s.charAt(0).toUpperCase()+s.slice(1);
+  const wd=["Lun","Mar","Mer","Jeu","Ven","Sam","Dim"];
+  const utc=d=>new Date(d+"T12:00:00Z");
+  const hhmm=m=>String(Math.floor(m/60)).padStart(2,"0")+":"+String(m%60).padStart(2,"0");
+
+  class PdfFile {
+    constructor() {
+      this.objects=[];
+      this.catalog=this.object("");this.tree=this.object("");
+      this.reg=this.object("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>");
+      this.bold=this.object("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>");
+      this.unicode=new Map();
+      this.ctx=document.createElement("canvas").getContext("2d");
+      this.widths=new Map();
+    }
+    object(data){this.objects.push(data);return this.objects.length;}
+    stream(dict,bytes){
+      if(typeof bytes==="string") bytes=byteText.encode(bytes);
+      return this.object(["<< /Length "+bytes.length+" "+dict+" >>\nstream\n",bytes,"\nendstream"]);
+    }
+    width(text,size,bold=false) {
+      const key=(bold?"b":"r")+size+"|"+text;
+      if(!this.widths.has(key)) {
+        this.ctx.font=(bold?"bold ":"")+size+"px "+face;
+        this.widths.set(key,this.ctx.measureText(text).width);
+      }
+      return this.widths.get(key);
+    }
+    /* Let the local text shaper render scripts outside WinAnsi. A PDF Type 3 glyph
+       and its Unicode map keep each such line searchable and copyable. */
+    unicodeFont(text,bold) {
+      const key=(bold?"b":"r")+text;
+      if(this.unicode.has(key)) return this.unicode.get(key);
+      const em=96, font=(bold?"bold ":"")+em+"px "+face;
+      const canvas=document.createElement("canvas");const ctx=canvas.getContext("2d",{willReadFrequently:true});
+      ctx.font=font;
+      const m=ctx.measureText(text);
+      const left=Math.floor(Math.min(0,-m.actualBoundingBoxLeft))-1, above=Math.ceil(m.actualBoundingBoxAscent)+1;
+      const w=Math.max(1,Math.ceil(Math.max(m.width,m.actualBoundingBoxRight))-left+1);
+      const h=Math.max(1,above+Math.ceil(m.actualBoundingBoxDescent)+1);
+      canvas.width=w;canvas.height=h;ctx.font=font;ctx.fillText(text,-left,above);
+      const alpha=ctx.getImageData(0,0,w,h).data, stride=Math.ceil(w/8), mask=new Uint8Array(stride*h);
+      for(let y=0;y<h;y++) for(let x=0;x<w;x++) if(alpha[(y*w+x)*4+3]>=112) mask[y*stride+(x>>3)]|=128>>(x&7);
+      const image=this.stream("/Type /XObject /Subtype /Image /Width "+w+" /Height "+h+" /ImageMask true /BitsPerComponent 1 /Decode [1 0]",mask);
+      const lower=(above-h)/em, box=[left/em,lower,(left+w)/em,above/em].map(num).join(" "), advance=num(m.width/em);
+      const glyph=this.stream("",advance+" 0 "+box+" d1\nq "+num(w/em)+" 0 0 "+num(h/em)+" "+num(left/em)+" "+num(lower)+" cm /I Do Q");
+      const map=this.stream("","/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n/CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def\n/CMapName /LocalUnicode def\n/CMapType 2 def\n1 begincodespacerange\n<01> <01>\nendcodespacerange\n1 beginbfchar\n<01> <"+unicodeHex(text)+">\nendbfchar\nendcmap\nCMapName currentdict /CMap defineresource pop\nend end");
+      const id=this.object("<< /Type /Font /Subtype /Type3 /FontBBox ["+box+"] /FontMatrix [1 0 0 1 0 0] /FirstChar 1 /LastChar 1 /Widths ["+advance+"] /Encoding << /Type /Encoding /Differences [1 /G] >> /CharProcs << /G "+glyph+" 0 R >> /Resources << /XObject << /I "+image+" 0 R >> >> /ToUnicode "+map+" 0 R >>");
+      this.unicode.set(key,id);return id;
+    }
+    blob(pages) {
+      const ids=pages.map(p=>{
+        const content=this.stream("",p.ops.join("\n"));
+        const fonts=["/F1 "+this.reg+" 0 R","/F2 "+this.bold+" 0 R",...[...p.extra].map(id=>"/U"+id+" "+id+" 0 R")];
+        return this.object("<< /Type /Page /Parent "+this.tree+" 0 R /MediaBox [0 0 "+p.w+" "+p.h+"] /Resources << /Font << "+fonts.join(" ")+" >> >> /Contents "+content+" 0 R >>");
+      });
+      this.objects[this.tree-1]="<< /Type /Pages /Kids ["+ids.map(id=>id+" 0 R").join(" ")+"] /Count "+ids.length+" >>";
+      this.objects[this.catalog-1]="<< /Type /Catalog /Pages "+this.tree+" 0 R /Lang (fr-FR) >>";
+      const pieces=[],offsets=[0]; let pos=0;
+      const put=value=>{const bytes=typeof value==="string"?byteText.encode(value):value;pieces.push(bytes);pos+=bytes.length;};
+      put("%PDF-1.4\n%");put(new Uint8Array([226,227,207,211,10]));
+      this.objects.forEach((obj,i)=>{offsets.push(pos);put((i+1)+" 0 obj\n");(Array.isArray(obj)?obj:[obj]).forEach(put);put("\nendobj\n");});
+      const xref=pos;
+      put("xref\n0 "+offsets.length+"\n0000000000 65535 f \n");
+      offsets.slice(1).forEach(x=>put(String(x).padStart(10,"0")+" 00000 n \n"));
+      put("trailer\n<< /Size "+offsets.length+" /Root "+this.catalog+" 0 R >>\nstartxref\n"+xref+"\n%%EOF\n");
+      return new Blob(pieces,{type:"application/pdf"});
+    }
+  }
+  class Page {
+    constructor(pdf,size){this.pdf=pdf;[this.w,this.h]=size;this.ops=[];this.extra=new Set();}
+    rect(x,y,w,h,fill){this.ops.push(rgb(fill)+" rg "+[x,this.h-y-h,w,h].map(num).join(" ")+" re f");}
+    line(x1,y1,x2,y2,color=colors.line,weight=.45){
+      this.ops.push(rgb(color)+" RG "+num(weight)+" w "+[x1,this.h-y1].map(num).join(" ")+" m "+[x2,this.h-y2].map(num).join(" ")+" l S");
+    }
+    text(raw,x,y,size,{bold=false,color=colors.ink,align="left"}={}){
+      const text=clean(raw);if(!text) return;
+      const width=this.pdf.width(text,size,bold);
+      if(align==="center") x-=width/2;else if(align==="right") x-=width;
+      let font=bold?"F2":"F1",bytes=winAnsi(text);
+      if(bytes===null){const id=this.pdf.unicodeFont(text,bold);font="U"+id;this.extra.add(id);bytes="01";}
+      this.ops.push("BT /"+font+" "+num(size)+" Tf "+rgb(color)+" rg 1 0 0 1 "+num(x)+" "+num(this.h-y)+" Tm <"+bytes+"> Tj ET");
+    }
+  }
+  function wrap(pdf,text,maxWidth,size,bold=false) {
+    const words=clean(text).trim().split(/\s+/),lines=[];let line="";
+    for(const word of words) {
+      const next=line?line+" "+word:word;
+      if(pdf.width(next,size,bold)<=maxWidth){line=next;continue;}
+      if(line){lines.push(line);line="";}
+      for(const c of word) {
+        if(line && pdf.width(line+c,size,bold)>maxWidth){lines.push(line);line="";}
+        line+=c;
+      }
+    }
+    if(line) lines.push(line);
+    return lines.length?lines:[""];
+  }
+  function codeAt(state,n,d) {
+    if(!D.isActive(n,d)) return "X";
+    const a=state.assignments[d]?.[n.id];
+    if(a && a.shift!=="-") return a.shift;
+    if(D.absenceOn(state,n.id,d)) return "A";
+    return a||state.reviewed[d]?.includes(n.id)?"R":"?";
+  }
+  function tiih(state,day) {
+    const minutes=D.shiftMinutes(state,day,"T");
+    const end=D.tiihWallEnd(day,minutes)-Date.parse(day+"T00:00:00Z")/60000;
+    return {minutes,clock:hhmm(end%1440),offset:Math.floor(end/1440)};
+  }
+  function schedule(state,day,code) {
+    if(code==="J") return "08:00 – 20:00";
+    if(code==="N") return "20:00 – 08:00 le lendemain";
+    if(code!=="T") return "—";
+    const t=tiih(state,day);
+    return "09:00 – "+t.clock+([""," le lendemain"," le surlendemain"][t.offset]||"");
+  }
+  function header(p,job,individual=false,annex=false) {
+    const right=p.w-margin;
+    p.text("PLANNING IDE   /   SMUR · TIIH",margin,31,8.5,{bold:true,color:colors.teal});
+    const status=(job.demo?"Équipe fictive   ·   ":"")+(job.proposal?"Proposition à valider":"Planning enregistré");
+    p.text(status,right,31,8.8,{align:"right",bold:true,color:colors.teal});
+    const title=annex?"Nom complet de l’IDE":individual?(job.nameAnnex?"Planning individuel":job.person.name):job.monthName;
+    const lines=wrap(p.pdf,title,right-margin-2,24,true);
+    let y=63;
+    for(const line of lines){p.text(line,margin,y,24,{bold:true});y+=27;}
+    const subtitle=individual?(job.nameAnnex?job.monthName+(annex?"":"   /   Nom complet en fin de document"):"Planning individuel   /   "+job.monthName):"Planning d’équipe   /   "+job.roster.length+" IDE";
+    p.text(subtitle,margin,y-10,10,{color:colors.muted});
+    return y+7;
+  }
+  function footer(p,job,index,total) {
+    p.line(margin,p.h-33,p.w-margin,p.h-33);
+    p.text("Édité le "+job.stamp+"  ·  Heure de Paris",margin,p.h-18,7.9,{color:colors.muted});
+    p.text("Page "+(index+1)+" / "+total,p.w-margin,p.h-18,7.9,{align:"right",color:colors.muted});
+  }
+  function teamLegend(p) {
+    const y=p.h-66,left=margin;
+    const items=[["J","SMUR jour  08:00–20:00"],["N","SMUR nuit  20:00–08:00 le lendemain"],["T","TIIH  09:00–16:42 par défaut"]];
+    let x=left;
+    for(const [k,t] of items) {
+      p.rect(x,y-10,15,14,colors[k]);p.text(k,x+7.5,y,8.6,{align:"center",bold:true});
+      p.text(t,x+20,y,8.2);x+=p.pdf.width(t,8.2)+40;
+    }
+    p.text("A   Absence      R   Repos      ?   Non renseigné      ×   Hors effectif      Colonnes grisées   Samedi / dimanche",left,y+20,8,{color:colors.muted});
+  }
+  function drawHalf(p,job,dates,rows,y,custom) {
+    const x=margin,w=p.w-margin*2,nameW=163,cw=(w-nameW)/dates.length;
+    const first=Number(dates[0].slice(-2)),last=Number(dates.at(-1).slice(-2));
+    p.text("Du "+first+" au "+last+" "+job.monthOnly,x,y+8,10.5,{bold:true,color:colors.teal}); y+=15;
+    p.rect(x,y,w,24,colors.light);p.text("IDE",x+7,y+15,8,{bold:true,color:colors.muted});
+    dates.forEach((d,i)=>{
+      const wx=x+nameW+i*cw;if(D.weekday(d)>4)p.rect(wx,y,cw,24,colors.weekend);
+      p.text(wd[D.weekday(d)],wx+cw/2,y+9,7,{align:"center",color:colors.muted});
+      p.text(String(Number(d.slice(-2))),wx+cw/2,y+20,9.5,{bold:true,align:"center"});
+    });
+    const gridTop=y;y+=24;
+    for(const row of rows) {
+      dates.forEach((d,i)=>{
+        const c=codeAt(job.state,row.n,d),wx=x+nameW+i*cw,weekend=D.weekday(d)>4;
+        if(colors[c] || weekend) p.rect(wx,y,cw,row.h,colors[c]||colors.weekBody);
+        p.text(c==="X"?"×":c,wx+cw/2,y+row.h/2+3.1,9.3,{bold:c!=="?"&&c!=="R",align:"center",color:c==="?"?colors.muted:colors.ink});
+      });
+      row.lines.forEach((t,i)=>p.text(t,x+7,y+(row.h-row.lines.length*10.6)/2+8+i*10.6,8.8,{bold:true}));
+      y+=row.h;p.line(x,y,x+w,y);
+    }
+    if(custom.size){
+      p.rect(x,y,w,24,colors.light);p.text("TIIH modifié · début 09:00",x+7,y+10,7.8,{bold:true,color:colors.teal});
+      p.text("Heure de fin / durée du poste",x+7,y+20,7.1,{color:colors.muted});
+      dates.forEach((d,i)=>{const t=custom.get(d);if(!t)return;const center=x+nameW+(i+.5)*cw;
+        p.text(t.clock+(t.offset?" +"+t.offset:""),center,y+10,7.7,{bold:true,align:"center"});
+        p.text(D.formatMinutes(t.minutes),center,y+20,7,{align:"center",color:colors.muted});
+      });y+=24;
+    }
+    for(let i=0;i<=dates.length;i++){const wx=x+nameW+i*cw;p.line(wx,gridTop,wx,y);}
+    p.line(x,gridTop,x, y);p.line(x,gridTop,x+w,gridTop);p.line(x,y,x+w,y);
+    return y;
+  }
+  function teamPages(pdf,job) {
+    const pages=[];let p,y,top;
+    function next(){p=new Page(pdf,LANDSCAPE);pages.push(p);top=y=header(p,job);}
+    next();
+    if(!job.roster.length){p.text("Aucune IDE dans l’effectif ce mois-ci.",margin,y+26,12);return pages;}
+    const rows=job.roster.flatMap(n=>{
+      const lines=wrap(pdf,n.name,148,8.8,true);
+      const parts=[];
+      for(let i=0;i<lines.length;i+=28) {
+        const portion=lines.slice(i,i+28);
+        parts.push({n,lines:portion,h:Math.max(18,portion.length*10.6+7)});
+      }
+      return parts;
+    });
+    for(const dates of [job.days.slice(0,15),job.days.slice(15)]) {
+      const custom=new Map();
+      for(const d of dates) {
+        if(!D.tiihRequired(job.state,d)&&!job.roster.some(n=>codeAt(job.state,n,d)==="T"))continue;
+        const t=tiih(job.state,d);if(t.minutes!==D.SHIFT_MINUTES.T)custom.set(d,t);
+      }
+      const fixed=39+(custom.size?24:0), bottom=p.h-85;
+      if(y>top && y+fixed+rows.reduce((sum,r)=>sum+r.h,0)>bottom) next();
+      let i=0;
+      while(i<rows.length) {
+        if(y+fixed+rows[i].h>bottom && y>top) next();
+        const start=i;let h=0;
+        while(i<rows.length && (i===start || y+fixed+h+rows[i].h<=bottom)){h+=rows[i].h;i++;}
+        y=drawHalf(p,job,dates,rows.slice(start,i),y,custom)+15;
+        if(i<rows.length) next();
+      }
+    }
+    return pages;
+  }
+  function individualPages(pdf,job) {
+    const pages=[],rows=job.days.map(day=>({day,code:codeAt(job.state,job.person,day)}));
+    const total=rows.reduce((m,r)=>m+(["J","N","T"].includes(r.code)?D.shiftMinutes(job.state,r.day,r.code):0),0);
+    job.nameAnnex=wrap(pdf,job.person.name,PORTRAIT[0]-2*margin-2,24,true).length>5;
+    let i=0;
+    while(i<rows.length){
+      const p=new Page(pdf,PORTRAIT);pages.push(p);let y=header(p,job,true);
+      const x=margin,right=p.w-margin,cols=[x,x+139,x+236,right-57,right];
+      p.text("Postes du mois  "+D.formatMinutes(total),right,y-2,9,{align:"right",bold:true,color:colors.teal});y+=6;
+      p.rect(x,y,right-x,22,colors.light);
+      ["Date","Poste","Horaires","Durée"].forEach((t,k)=>p.text(t,cols[k]+6,y+14,8.5,{bold:true,color:colors.muted}));
+      const top=y;y+=22;
+      while(i<rows.length && y+19<=p.h-44){
+        const {day,code}=rows[i++],isWeekend=D.weekday(day)>4;
+        if(isWeekend)p.rect(x,y,right-x,19,colors.weekBody);
+        if(colors[code])p.rect(cols[1],y,cols[2]-cols[1],19,colors[code]);
+        p.text(capital(dayFmt.format(utc(day))),x+6,y+12.5,8.9,{bold:isWeekend});
+        p.text(labels[code],cols[1]+6,y+12.5,8.9,{bold:["J","N","T"].includes(code)});
+        p.text(schedule(job.state,day,code),cols[2]+6,y+12.5,8.8);
+        p.text(["J","N","T"].includes(code)?D.formatMinutes(D.shiftMinutes(job.state,day,code)):"—",cols[3]+6,y+12.5,8.7);
+        y+=19;p.line(x,y,right,y);
+      }
+      cols.forEach(xx=>p.line(xx,top,xx,y));p.line(x,top,right,top);
+    }
+    if(job.nameAnnex) {
+      const nameLines=wrap(pdf,job.person.name,PORTRAIT[0]-2*margin-2,12,true);
+      let line=0;
+      while(line<nameLines.length) {
+        const p=new Page(pdf,PORTRAIT);pages.push(p);
+        let y=header(p,job,true,true)+12;
+        while(line<nameLines.length && y<=p.h-50){p.text(nameLines[line++],margin,y,12,{bold:true});y+=17;}
+      }
+    }
+    return pages;
+  }
+  function exportMonth({state,year,month,nurseId=null,proposal=false,demo=false}) {
+    const days=D.dates(...D.monthBounds(year,month));
+    const roster=state.nurses.filter(n=>days.some(d=>D.isActive(n,d)));
+    const person=nurseId===null?null:roster.find(n=>n.id===nurseId);
+    if(nurseId!==null && !person) throw Error("Cette IDE est hors effectif pendant tout le mois demandé.");
+    const monthName=capital(monthFmt.format(utc(days[0])));
+    const job={state,days,roster,person,proposal,demo,monthName,
+      monthOnly:new Intl.DateTimeFormat("fr-FR",{month:"long",timeZone:"UTC"}).format(utc(days[0])),stamp:stampFmt.format(new Date())};
+    const pdf=new PdfFile(), pages=person?individualPages(pdf,job):teamPages(pdf,job);
+    pages.forEach((p,i)=>{if(!person)teamLegend(p);footer(p,job,i,pages.length);});
+    const who=person?clean(person.name).replace(/[^\p{L}\p{N}]+/gu,"-").replace(/^-|-$/g,"").slice(0,60)||"ide":"equipe";
+    return {blob:pdf.blob(pages),filename:"planning-"+days[0].slice(0,7)+"-"+who+(proposal?"-proposition":"")+(demo?"-essai":"")+".pdf"};
+  }
+  globalThis.PlannerPDF=Object.freeze({exportMonth});
+})();
+
+</script>
+<script>
 (() => {
   "use strict";
   const D = globalThis.PlannerDomain;
@@ -1708,7 +2142,7 @@
   const baseKey = "planning-ide.hors-ligne.v2";
   let page = "planning", period = today.slice(0,7), week = -1, demo = false;
   let planningMode="team", selectedNurseId=null, editingTiih=null, teamDay=null;
-  let proposal = null, absenceId = "", storageAvailable = true, stored = null, broken = false, busy = false, state;
+  let proposal = null, includeLookahead = false, absenceId = "", storageAvailable = true, stored = null, broken = false, busy = false, state;
   let cloud=null, formEdited=false;
   const cloudActive=()=>Boolean(cloud && !demo);
   const key = () => baseKey+(demo?".demo":"");
@@ -1784,17 +2218,18 @@
   const dataAtt = (name,val) => 'data-'+name+'="'+esc(val)+'"';
   function setPeriod(value) {
     if(!/^\d{4}-(0[1-9]|1[0-2])$/.test(value) || Number(value.slice(0,4))<1900 || Number(value.slice(0,4))>2199) throw Error("Choisissez un mois entre 1900 et 2199.");
-    period=value; teamDay=null; week=-1; proposal=null; absenceId=""; notify(); render();
+    period=value; teamDay=null; week=-1; proposal=null; includeLookahead=false; absenceId=""; notify(); render();
   }
   function switchSpace(toDemo) {
     if(cloudActive() && cloud.pending) throw Error("Terminez l’enregistrement dans Google Sheets ou rechargez la version partagée avant de changer d’équipe.");
-    demo=toDemo; page="planning"; teamDay=null; week=-1; proposal=null; absenceId=""; notify(); openSpace();
+    demo=toDemo; page="planning"; teamDay=null; week=-1; proposal=null; includeLookahead=false; absenceId=""; notify(); openSpace();
   }
   function syncStatus() {
     const status=document.getElementById("storage-status"), controls=document.getElementById("cloud-controls");
     controls.innerHTML="";
+    main.inert=nav.inert=cloudActive() && cloud.phase==="reloading";
     if(!cloudActive()) {
-      status.textContent=demo?"Équipe fictive · Essai":storageAvailable?"Sur cet appareil":"Sauvegarde JSON requise";
+      status.textContent=demo?"Équipe fictive · Essai local":storageAvailable?"Sur cet appareil":"Sauvegarde JSON requise";
       return;
     }
     const phase=cloud.phase;
@@ -1821,14 +2256,20 @@
       return;
     }
     nav.innerHTML=Object.entries(pages).map(([k,v])=>btn("page",v,"",dataAtt("page",k)+(k===page?' aria-current="page"':''))).join("");
-    const bar=demo?'<aside class="notice"><p><strong>Équipe fictive</strong> · Les changements de cet essai sont conservés séparément.</p>'+btn("exit-demo","Revenir à mon équipe")+'</aside>':"";
+    const bar=demo?'<aside class="notice"><p><strong>Équipe fictive</strong> · Les changements de cet essai sont conservés dans ce navigateur.</p>'+btn("exit-demo","Revenir à mon équipe")+'</aside>':"";
     main.innerHTML=bar+({planning:planningView,absence:absenceView,tiih:tiihView,team:teamView,annual:annualView,files:filesView}[page])()+(page==="team"?phaseView():page==="files"?legacyView():"");
     if(page==="team") syncPhase();
     if(page==="absence") {
       const form=main.querySelector('form[data-form=absence]');
       syncDatedNurses(form,form.elements.from.value,state.absences.find(a=>a.id===absenceId)?.nurse_id);
     }
-    if(page==="tiih") syncTiih(main.querySelector('form[data-form=tiih]'));
+    if(page==="tiih") {
+      syncTiih(main.querySelector('form[data-form=tiih]'));
+      syncTiihBatch();
+      main.querySelector("#tiih-picked").addEventListener("toggle",e=>{
+        if(e.target.open) e.target.querySelector("p").textContent=[...tiihSelected].sort().map(shortDay).join(" · ");
+      });
+    }
   }
   function cellInfo(s,id,day) {
     const nurse=s.nurses.find(n=>n.id===id);
@@ -1884,7 +2325,12 @@
     const monthName=dateFmt(start,{month:"long",year:"numeric"});
     const roster=rosterDuring(s,all);
     const missing=roster.filter(n=>all.some(day=>D.isActive(n,day) && D.quotaOn(n,day)==null)).length;
-    let out=title(monthName[0].toUpperCase()+monthName.slice(1),picker()+btn("generate",busy?"Recherche en cours…":"Générer une proposition","primary",busy || missing || proposal || !roster.length?"disabled":""));
+    const blocked=busy || !!proposal || !roster.length;
+    const tools=picker()+btn("edit-day","Modifier une journée","",blocked?"disabled":"")+
+      btn("generate",busy?"Recherche en cours…":"Générer une proposition","primary",blocked || missing?"disabled":"");
+    let out=title(monthName[0].toUpperCase()+monthName.slice(1),tools);
+    if(!proposal && roster.length) out+='<div class="generation-scope"><label><input type="checkbox" id="include-lookahead"'+
+      (includeLookahead?' checked':'')+'> Inclure l’anticipation après ce mois</label></div>';
     if(!demo && !proposal && !Object.keys(state.assignments).length)
       out+='<aside class="notice"><p><strong>'+(cloudActive() && cloud.phase==="empty"?"Démarrer dans ce classeur":"Démarrer le planning")+'</strong><br>Vous pouvez reprendre les postes d’un ancien planning ou essayer avec des noms fictifs.</p><div class="actions">'+btn("page","Importer un planning","",dataAtt("page","files"))+btn("demo","Essayer avec une équipe fictive")+'</div></aside>';
     if(missing && !proposal) out+='<aside class="notice"><p><strong>'+missing+' quotité'+(missing>1?'s':'')+' à compléter</strong><br>Renseignez les temps de travail pour générer le premier planning.</p>'+btn("page","Configurer l’équipe","primary",dataAtt("page","team"))+'</aside>';
@@ -1900,7 +2346,8 @@
     if(person) selectedNurseId=person.id;
     const individual=planningMode==="individual";
     out+='<section class="panel"><div class="panelhead"><div><h2>'+(proposal?"Planning proposé":"Planning enregistré")+'</h2><p class="subtle">'+(proposal?"Consultez les postes avant de conserver la proposition.":"Sélectionnez un poste ou une journée pour modifier l’affectation.")+'</p></div>'+
-      '<div class="weekbar viewbar" role="group" aria-label="Vue du planning">'+btn("planning-mode","Équipe","",dataAtt("mode","team")+' aria-pressed="'+!individual+'"')+btn("planning-mode","Par IDE","",dataAtt("mode","individual")+' aria-pressed="'+individual+'"')+'</div></div>';
+      '<div class="actions"><div class="weekbar viewbar" role="group" aria-label="Vue du planning">'+btn("planning-mode","Équipe","",dataAtt("mode","team")+' aria-pressed="'+!individual+'"')+btn("planning-mode","Par IDE","",dataAtt("mode","individual")+' aria-pressed="'+individual+'"')+'</div>'+
+      btn("export-pdf","Exporter en PDF","",person?'title="'+esc(individual?"Planning de "+person.name:"Planning de toute l’équipe")+'"':"disabled")+'</div></div>';
     if(person) out+=individual?individualAgenda(s,person,all,roster):teamGrid(s,all,roster);
     else out+='<div class="notice"><p>Aucune IDE dans l’effectif ce mois-ci.</p>'+btn("page","Gérer les agents","",dataAtt("page","team"))+'</div>';
     const members=new Set(roster.map(n=>n.id));
@@ -1934,8 +2381,11 @@
     const full=week===-1, shown=full?all:all.slice(week*7,week*7+7);
     const pager=(i,label)=>btn("week",label,"",dataAtt("week",i)+' aria-pressed="'+(week===i)+'"');
     const pages=[pager(-1,"Mois entier"),...Array.from({length:pageCount},(_,i)=>pager(i,(i*7+1)+"–"+Math.min(all.length,i*7+7)))];
-    const headings=shown.map(day=>'<th scope="col" class="'+(D.weekday(day)>4?"weekend":"")+'">'+
-      esc(dateFmt(day,{weekday:full?"narrow":"short"}))+'<span>'+Number(day.slice(-2))+'</span></th>').join("");
+    const headings=shown.map(day=>{
+      const label=esc(dateFmt(day,{weekday:full?"narrow":"short"}))+'<span>'+Number(day.slice(-2))+'</span>';
+      const attributes=dataAtt("day",day)+' aria-label="'+esc("Modifier la journée du "+shortDay(day))+'"';
+      return '<th scope="col" class="'+(D.weekday(day)>4?"weekend":"")+'">'+(proposal?label:btn("edit-day",label,"date-edit",attributes))+'</th>';
+    }).join("");
     const rows=roster.map(n=>'<tr><th scope="row">'+esc(n.name)+'</th>'+shown.map(day=>{
       const {code,label,a,unknown}=cellInfo(s,n.id,day);
       const mark=code==="X"?(full?"×":"Hors effectif"):unknown?"?":code==="-"?"—":full?code:code==="A"?"Abs.":D.SHIFT_LABELS[code];
@@ -1966,6 +2416,59 @@
     const csv=btn("csv-individual","Exporter le mois de cette IDE en CSV");
     return '<div class="person-tools"><label class="field">IDE affichée<select id="individual-nurse">'+nurseOptions(roster,person.id)+'</select></label>'+csv+'</div><div class="person-summary"><strong>'+esc(D.formatMinutes(total))+' de postes</strong><span>'+count.J+' SMUR J</span><span>'+count.N+' SMUR N</span><span>'+count.T+' TIIH</span></div><ul class="agenda" aria-label="'+esc("Planning mensuel de "+person.name)+'">'+list+'</ul>';
   }
+  function showDayEditor(day) {
+    const [first,last]=range();
+    if(proposal || day<first || day>last) throw Error("Choisissez une date dans le mois du planning enregistré.");
+    const row=state.assignments[day]||{}, editor=globalThis.PlannerDayEditor;
+    const fields=["J","N","T"].map(role=>{
+      const current=editor.owners(row,role), closed=role==="T"&&!D.tiihRequired(state,day);
+      if(closed && !current.length) return "";
+      const selected=current.length===1?"id:"+current[0]:current.length?"keep":"vacant";
+      const keep=current.length>1?opt("keep","Conserver les titulaires actuels ("+current.map(nameOf).join(", ")+")",true):"";
+      const nurses=state.nurses.filter(n=>current.includes(n.id) || !closed && D.isActive(n,day));
+      const choices=nurses.map(n=>{
+        const assigned=current.includes(n.id), fixed=!assigned && editor.protectedCell(row[n.id]);
+        const absent=D.absentFor(state,n.id,day,role);
+        const label=n.name+(fixed?" · case protégée":absent?" · absence":"");
+        return '<option value="'+esc("id:"+n.id)+'"'+(selected==="id:"+n.id?' selected':'')+
+          (!assigned && (fixed || absent)?' disabled':'')+'>'+esc(label)+'</option>';
+      }).join("");
+      const label=D.SHIFT_LABELS[role]+" · "+(closed?"hors calendrier":shiftHours(state,day,role));
+      return '<label class="field">'+esc(label)+'<select name="role-'+role+'">'+keep+
+        opt("vacant",closed?"Retirer l’affectation":"À pourvoir",selected==="vacant")+choices+'</select></label>';
+    }).join("");
+    dialog.innerHTML='<form data-form="edit-day" '+dataAtt("day",day)+'><h2 id="dialog-title">Modifier une journée</h2>'+
+      '<label class="field">Date du planning<input type="date" id="edit-day-date" required min="'+first+'" max="'+last+'" value="'+day+'"></label>'+
+      fields+'<label><input type="checkbox" name="lock-changes"> Verrouiller les cases modifiées pour les prochains calculs</label>'+
+      '<div class="day-preview" aria-live="polite"></div><p class="issueerror" role="alert"></p>'+
+      '<div class="actions">'+btn("close","Annuler")+submit("Enregistrer cette journée")+'</div></form>';
+    if(!dialog.open) dialog.showModal();
+    refreshDayEditor(dialog.querySelector("form"));
+  }
+  function dayEdits(form) {
+    const choices={};
+    for (const role of ["J","N","T"]) {
+      const field=form.elements["role-"+role];
+      if(field) choices[role]=field.value;
+    }
+    return globalThis.PlannerDayEditor.edit(state,form.dataset.day,choices,form.elements["lock-changes"].checked);
+  }
+  function refreshDayEditor(form) {
+    const day=form.dataset.day, box=form.querySelector(".day-preview"), alert=form.querySelector('[role=alert]');
+    const submitButton=form.querySelector('[type=submit]'), date=form.querySelector("#edit-day-date");
+    box.replaceChildren(); alert.textContent="";
+    try {
+      const {candidate,changes}=dayEdits(form);
+      submitButton.disabled=!changes.length;
+      date.disabled=Boolean(changes.length);
+      if(!changes.length) return;
+      const conflicts=D.validateSchedule(candidate,day,day).filter(i=>i.severity==="error");
+      box.innerHTML='<p><strong>'+esc(shortDay(day))+'</strong></p><ul>'+changes.map(c=>'<li>'+esc(c.name)+' · '+
+        esc(D.SHIFT_LABELS[c.before])+' → '+esc(D.SHIFT_LABELS[c.after])+'</li>').join("")+'</ul>'+
+        (conflicts.length?'<details open><summary>'+conflicts.length+' point(s) à corriger dans le brouillon</summary><ul>'+
+          conflicts.map(i=>'<li>'+esc(i.message)+'</li>').join("")+'</ul></details>':"");
+    } catch(error) {submitButton.disabled=true;date.disabled=true;alert.textContent=error.message;}
+  }
   function showEditor(id,day) {
     if(!state.nurses.some(n=>n.id===id && D.isActive(n,day))) throw Error("Cette IDE est hors effectif à cette date.");
     const {a}=cellInfo(state,id,day);
@@ -1983,7 +2486,26 @@
     const initialCredit=duration(old&&timed?credits.reduce((a,b)=>a+b,0):credits[0]??462);
     return title("Absences")+ '<div class="cols"><section class="panel"><h2>'+(old?"Modifier l’absence":"Ajouter une absence")+'</h2><form data-form="absence"><div class="fields"><label>IDE<select name="nurse">'+nurseOptions(rosterDuring(state,[first]),old?.nurse_id)+'</select></label><label>Motif<select name="kind">'+D.ABSENCE_KINDS.map(k=>opt(k,k,k===old?.kind)).join("")+'</select></label></div><label class="field">Type de saisie<select name="mode" id="absence-mode">'+opt("days","Journées entières",!timed)+opt("slot","Créneau horaire",timed)+'</select></label><div class="fields"><label>Du<input required type="date" name="from" value="'+first+'"></label><label>Au (inclus)<input required type="date" name="to" value="'+last+'"></label></div><div class="fields" id="times" style="'+(timed?"":"display:none")+'"><label>Heure de début<input type="time" required name="begin" value="'+(timed?old.start.slice(11,16):"09:00")+'"></label><label>Heure de fin<input type="time" required name="finish" value="'+(timed?old.end.slice(11,16):"11:00")+'"></label></div><div class="fields"><label><span id="credit-label">'+(timed?"Crédit total du créneau":"Crédit par jour du lundi au vendredi")+'</span><input name="credit" required value="'+initialCredit+'" placeholder="7:42" pattern="[0-9]{1,2}:[0-5][0-9]"></label></div><p class="hint">Une absence du vendredi au lundi bloque les quatre jours et crédite 15 h 24 par défaut.</p><div class="actions" style="margin-top:1rem">'+submit("Enregistrer l’absence")+(old?btn("cancel-absence","Annuler"):"")+'</div></form></section><section class="panel"><h2>Absences enregistrées</h2>'+(!state.absences.length?'<p class="mutedbox">Aucune absence enregistrée.</p>':state.absences.slice().sort((a,b)=>b.start.localeCompare(a.start)).map(a=>'<div class="listitem"><div><strong>'+esc(nameOf(a.nurse_id))+'</strong> · '+esc(a.kind)+'<small>Du '+esc(shortDay(a.start.slice(0,10)))+' à '+esc(a.start.slice(11,16))+' au '+esc(shortDay(a.end.slice(0,10)))+' à '+esc(a.end.slice(11,16))+' (fin exclusive)</small><small>Crédit '+esc(D.formatMinutes(Object.values(a.credits).reduce((x,y)=>x+y,0)))+'</small></div><div class="actions">'+btn("edit-absence","Modifier","mini",dataAtt("id",a.id))+btn("delete-absence","Supprimer","mini danger",dataAtt("id",a.id))+'</div></div>').join(""))+'</section></div>';
   }
+  let tiihSelected=new Set(), tiihMode="single", tiihDemo=false, tiihReview=null;
+  let tiihBatchValues={operation:"duration",duration:"7:42",offset:"1"};
+  const tiihOperations={duration:"Modifier la durée",normal:"Rétablir la durée de 7 h 42",cancel:"Supprimer",move:"Déplacer",restore:"Restaurer"};
+  function tiihBatchEditor() {
+    const [start,end]=range();
+    const operationOptions=Object.entries(tiihOperations).map(([value,label])=>opt(value,label,value===tiihBatchValues.operation)).join("");
+    return '<div id="tiih-batch"><h2>Modifier plusieurs TIIH</h2><p class="hint">Cochez des postes dans le tableau ou sélectionnez leurs dates d’origine sur une période.</p>'+
+      '<details class="tiih-period"><summary>Sélectionner par période</summary><form data-form="tiih-range"><div class="fields"><label>Du<input type="date" required name="from" value="'+start+'"></label><label>Au inclus<input type="date" required name="to" value="'+end+'"></label></div>'+
+      '<fieldset><legend>Jours d’origine</legend>'+[[1,"Mardi"],[3,"Jeudi"],[4,"Vendredi"]].map(([value,label])=>'<label><input type="checkbox" name="weekday" value="'+value+'" checked> '+label+'</label>').join("")+'</fieldset>'+submit("Ajouter une période")+'</form></details>'+
+      '<p id="tiih-count" class="selection-count" aria-live="polite"></p><details id="tiih-picked"><summary>Voir les dates sélectionnées</summary><p></p></details>'+
+      '<form data-form="tiih-batch"><label class="field">Action sur la sélection<select name="operation">'+operationOptions+'</select></label>'+
+      '<div class="fields" id="batch-duration"><label>Durée par poste (h:mm)<input required name="duration" pattern="[0-9]{1,2}:[0-5][0-9]" value="'+esc(tiihBatchValues.duration)+'"></label></div>'+
+      '<div class="fields" id="batch-offset"><label>Décalage depuis chaque date d’origine (jours)<input type="number" required name="offset" step="1" value="'+esc(tiihBatchValues.offset)+'"></label></div>'+
+      '<p class="hint" id="tiih-batch-help"></p><div class="bottomaction">'+submit("Examiner les changements")+'</div></form></div>';
+  }
   function tiihView() {
+    if(tiihDemo!==demo) {
+      tiihSelected.clear(); tiihMode="single"; tiihReview=null; tiihDemo=demo;
+      tiihBatchValues={operation:"duration",duration:"7:42",offset:"1"};
+    }
     const all=days(), sources=new Set(all.filter(day=>D.defaultTiih(state,day)));
     for(const [source,target] of Object.entries(state.tiih_changes)) {
       if(source.startsWith(period)||target?.startsWith(period)) sources.add(source);
@@ -1993,18 +2515,83 @@
     const list=rows.map(day=>{
       const actual=D.tiihDay(state,day), length=D.getTiihDuration(state,day);
       const status=!actual?"Supprimé":actual===day?"Prévu":"Déplacé";
-      return '<tr><th scope="row">'+esc(shortDay(day))+'</th><td>'+esc(actual?shortDay(actual):"—")+'</td><td>'+
+      const check='<input type="checkbox" data-pick-tiih="'+day+'" aria-label="'+esc("Sélectionner le TIIH du "+shortDay(day))+'"'+(tiihSelected.has(day)?" checked":"")+'>';
+      return '<tr><td>'+check+'</td><th scope="row">'+esc(shortDay(day))+'</th><td>'+esc(actual?shortDay(actual):"—")+'</td><td>'+
         esc(actual?tiihHours(actual,length):"—")+'</td><td class="countcell">'+esc(D.formatMinutes(length))+'</td><td>'+status+'</td><td>'+
         btn("edit-tiih","Modifier","mini",dataAtt("source",day)+' aria-label="'+esc("Modifier le TIIH du "+shortDay(day))+'"')+'</td></tr>';
     }).join("");
-    return title("Postes TIIH",picker())+`<div class="cols tiih-cols"><section class="panel"><h2>Adapter une journée</h2>
+    const modes='<div class="weekbar viewbar tiih-modes" role="group" aria-label="Mode de modification">'+btn("tiih-mode","Un poste","",dataAtt("mode","single"))+btn("tiih-mode","Plusieurs postes","",dataAtt("mode","batch"))+'</div>';
+    return title("Postes TIIH",picker())+`<div class="cols tiih-cols"><section class="panel">${modes}<div id="tiih-single"><h2>Adapter une journée</h2>
       <p class="hint">Le TIIH est prévu le mardi, le jeudi et le vendredi, hors jours fériés. Il commence à 9 h et dure habituellement 7 h 42. Chaque modification porte sur une seule occurrence. Les deux postes SMUR restent obligatoires chaque jour.</p>
       <form data-form="tiih"><div class="fields"><label>Date d’origine<input required type="date" id="tiih-source" name="source" value="${source}"></label></div>
       <label class="field">Action<select name="operation" id="tiih-op">${opt("duration","Modifier la durée",Boolean(effective))}${opt("normal","Rétablir la durée de 7 h 42")}${opt("cancel","Supprimer")}${opt("move","Déplacer")}${opt("restore","Restaurer",!effective)}</select></label>
       <div class="fields" id="duration-row"><label>Durée du TIIH (h:mm)<input name="duration" pattern="[0-9]{1,2}:[0-5][0-9]" value="${durationInput(minutes)}" placeholder="7:42"></label></div>
       <div class="fields" id="target-row" hidden><label>Nouvelle date<input type="date" name="target" value="${nextFreeTiihDay(effective||source)}"></label></div>
-      <p id="tiih-help" class="hint" aria-live="polite"></p><div class="bottomaction">${submit("Appliquer au TIIH")}</div></form></section>
-      <section class="panel"><h2>Postes du mois</h2><div class="scroll"><table><thead><tr><th>Origine</th><th>Date effective</th><th>Horaires</th><th>Durée</th><th>État</th><th></th></tr></thead><tbody>${list}</tbody></table></div></section></div>`;
+      <p id="tiih-help" class="hint" aria-live="polite"></p><div class="bottomaction">${submit("Appliquer au TIIH")}</div></form></div>${tiihBatchEditor()}</section>
+      <section class="panel"><div class="panelhead"><h2>Postes du mois</h2><div class="actions">${btn("tiih-select-month","Sélectionner le mois affiché","mini")}${btn("tiih-clear","Vider la sélection","mini")}</div></div><div class="scroll"><table><thead><tr><th scope="col" aria-label="Sélection"></th><th>Origine</th><th>Date effective</th><th>Horaires</th><th>Durée</th><th>État</th><th></th></tr></thead><tbody>${list}</tbody></table></div></section></div>`;
+  }
+  function syncTiihBatch() {
+    const batch=tiihMode==="batch", form=main.querySelector('form[data-form=tiih-batch]');
+    main.querySelector("#tiih-single").hidden=batch;
+    main.querySelector("#tiih-batch").hidden=!batch;
+    main.querySelectorAll('[data-act=tiih-mode]').forEach(b=>b.setAttribute("aria-pressed",String(b.dataset.mode===tiihMode)));
+    const count=tiihSelected.size, sorted=[...tiihSelected].sort();
+    main.querySelector("#tiih-count").textContent=count+" poste"+(count>1?"s":"")+" sélectionné"+(count>1?"s":"");
+    const dates=main.querySelector("#tiih-picked");
+    dates.hidden=!count;
+    if(dates.open) dates.querySelector("p").textContent=sorted.map(shortDay).join(" · ");
+    main.querySelectorAll("[data-pick-tiih]").forEach(input=>{input.checked=tiihSelected.has(input.dataset.pickTiih);});
+    main.querySelector('[data-act=tiih-clear]').disabled=!count;
+    form.querySelector('[type=submit]').disabled=!count;
+    const op=form.elements.operation.value;
+    form.querySelector("#batch-duration").hidden=form.elements.duration.disabled=op!=="duration";
+    form.querySelector("#batch-offset").hidden=form.elements.offset.disabled=op!=="move";
+    form.querySelector("#tiih-batch-help").textContent={
+      duration:"Début à 9 h, durée de 0:01 à 48:00.",
+      normal:"Chaque poste actif sélectionné reprendra une durée de 7 h 42.",
+      cancel:"Les brouillons de poste TIIH concernés seront libérés.",
+      move:"Un nombre négatif avance les postes. Un nombre positif les reporte. Chaque poste garde sa durée.",
+      restore:"Chaque poste reprend sa date d’origine avec sa durée mémorisée."
+    }[op];
+  }
+  function addTiihRange(form) {
+    const data=new FormData(form), from=data.get("from"), to=data.get("to");
+    const weekdays=new Set(data.getAll("weekday").map(Number));
+    if(from>to) throw Error("La date de fin doit suivre le début de la période.");
+    if(!weekdays.size) throw Error("Cochez au moins un jour d’origine.");
+    const found=D.dates(from,to).filter(day=>weekdays.has(D.weekday(day)) && (D.defaultTiih(state,day)||Object.hasOwn(state.tiih_changes,day)));
+    if(!found.length) throw Error("Aucun TIIH sur les jours sélectionnés dans cette période.");
+    found.forEach(day=>tiihSelected.add(day)); syncTiihBatch();
+    notify("Sélection mise à jour.");
+  }
+  function showTiihReview(request,result,updated=false) {
+    const changed=result.changes.filter(c=>c.changed), released=changed.reduce((n,c)=>n+c.released.length,0);
+    tiihReview={request,signature:JSON.stringify(result.changes)};
+    const when=(day,m)=>day?esc(shortDay(day))+'<small>'+esc(tiihHours(day,m))+' · '+esc(D.formatMinutes(m))+'</small>':"Supprimé";
+    const rows=result.changes.map(c=>'<tr><th scope="row">'+esc(shortDay(c.source))+'</th><td>'+when(c.from,c.oldMinutes)+'</td><td>'+when(c.to,c.newMinutes)+'</td><td>'+
+      esc(c.released.map(nameOf).join(", ")||(c.changed?"—":"Déjà appliqué"))+'</td></tr>').join("");
+    dialog.innerHTML='<div class="tiih-preview"><h2 id="dialog-title">Examiner les changements TIIH</h2><p><strong>'+esc(tiihOperations[request.operation])+'</strong> · '+changed.length+' poste(s) à modifier sur '+result.changes.length+' sélectionné(s).'+
+      (released?' '+released+' affectation(s) à réattribuer.':'')+'</p>'+(updated?'<p>Le planning a changé. Vérifiez ce nouvel aperçu avant de confirmer.</p>':'')+
+      '<div class="scroll"><table><thead><tr><th>Origine</th><th>Avant</th><th>Après</th><th>Affectations libérées</th></tr></thead><tbody>'+rows+'</tbody></table></div>'+
+      result.warnings.map(w=>'<p class="hint">'+esc(w)+'</p>').join("")+
+      '<p class="issueerror" role="alert"></p><div class="actions">'+btn("close","Annuler")+btn("tiih-apply-batch","Appliquer les changements","primary",changed.length?"":"disabled")+'</div></div>';
+    if(!dialog.open) dialog.showModal();
+  }
+  function reviewTiihForm(form) {
+    const operation=form.elements.operation.value, options={};
+    if(operation==="duration") options.minutes=D.parseDuration(form.elements.duration.value);
+    if(operation==="move") options.shiftDays=Number(form.elements.offset.value);
+    const request={sources:[...tiihSelected].sort(),operation,options};
+    showTiihReview(request,D.previewTiihBatch(state,request.sources,operation,options));
+  }
+  function commitTiihBatch() {
+    if(!tiihReview) return;
+    const {request,signature}=tiihReview;
+    const result=D.previewTiihBatch(state,request.sources,request.operation,request.options);
+    if(signature!==JSON.stringify(result.changes)) {showTiihReview(request,result,true); return;}
+    const count=result.changes.filter(c=>c.changed).length;
+    save(result.state,count+" poste(s) TIIH mis à jour.");
+    tiihReview=null; dialog.close();
   }
   function nextFreeTiihDay(day) {
     let target=D.addDays(day,1);
@@ -2169,6 +2756,13 @@
     showImportDialog('<h2 id="dialog-title">Importer cet historique ?</h2><p>'+files.length+' fichier(s) · '+result.state.nurses.length+' IDE dans l’équipe après import.</p><ul>'+warnings.map(text=>'<li>'+esc(text)+'</li>').join("")+'</ul>'+importQuotaField()+'<p role="alert" class="issueerror"></p><div class="actions">'+btn("close","Annuler")+btn("restore-data","Importer les plannings","primary")+'</div>');
   }
   async function submitForm(form) {
+    if(form.dataset.form==="edit-day") {
+      const {candidate,changes}=dayEdits(form);
+      if(changes.length) save(candidate,"Journée du "+shortDay(form.dataset.day)+" enregistrée.");
+      dialog.close(); return;
+    }
+    if(form.dataset.form==="tiih-range") {addTiihRange(form); return;}
+    if(form.dataset.form==="tiih-batch") {reviewTiihForm(form); return;}
     if(form.dataset.form==="team-management") {
       await globalThis.PlannerTeamManagement.submit(form,{state,save,dialog,render}); return;
     }
@@ -2269,7 +2863,7 @@
         if(!file?.size||file.size>20*1024*1024) throw Error("Choisissez un fichier JSON de moins de 20 Mo.");
         const value=D.migrateState(JSON.parse((await file.text()).replace(/^\uFEFF/,"")));
         stagedImport={state:value,placeholderContractIds:[]};
-        dialog.innerHTML='<h2 id="dialog-title">Restaurer cette sauvegarde ?</h2><p>'+value.nurses.length+' IDE · '+Object.keys(value.assignments).length+' dates · '+value.absences.length+' absences</p><p>Cette sauvegarde remplacera les données de '+(demo?"l’équipe fictive":"votre équipe")+'.</p>'+importQuotaField()+'<p class="issueerror" role="alert"></p><div class="actions">'+btn("close","Annuler")+btn("restore-data","Remplacer les données","primary")+'</div>';
+        dialog.innerHTML='<h2 id="dialog-title">Restaurer cette sauvegarde ?</h2><p>'+value.nurses.length+' IDE · '+Object.keys(value.assignments).length+' dates · '+value.absences.length+' absences</p><p>Cette sauvegarde remplacera les données de '+(demo?"l’équipe fictive":cloudActive()?"ce classeur Google Sheets partagé":"votre équipe")+'.</p>'+importQuotaField()+'<p class="issueerror" role="alert"></p><div class="actions">'+btn("close","Annuler")+btn("restore-data","Remplacer les données","primary")+'</div>';
         dialog.showModal(); break;
       }
     }
@@ -2284,7 +2878,7 @@
       busy=true; button.disabled=true; button.textContent="Recherche en cours…";
       try {
         await new Promise(resolve=>setTimeout(resolve,40));
-        const result=E.generate(state,year(),month(),{timeLimitMs:2500});
+        const result=E.generate(state,year(),month(),{timeLimitMs:2500,includeLookahead});
         if(result.candidate) {proposal=result; week=-1; notify();} else notify(result.message,true);
       } finally {busy=false; render();}
       return;
@@ -2321,15 +2915,36 @@
       }
       case "demo": switchSpace(true); break;
       case "exit-demo": switchSpace(false); break;
-      case "accept": if(proposal) save(clone(proposal.candidate),"Proposition acceptée et enregistrée."); break;
+      case "accept":
+        if(proposal) {
+          const scope=proposal.end>range()[1]?"Planning et anticipation enregistrés.":"Planning du mois enregistré.";
+          save(clone(proposal.candidate),scope); includeLookahead=false; render();
+        }
+        break;
       case "discard": proposal=null; notify("Proposition écartée."); render(); break;
       case "cell": showEditor(button.dataset.nurse,button.dataset.day); break;
+      case "edit-day": showDayEditor(button.dataset.day||defaultDay()); break;
+      case "export-pdf": {
+        button.disabled=true;
+        try {
+          const result=await globalThis.PlannerPDF.exportMonth({state:proposal?.candidate||state,year:year(),month:month(),
+            nurseId:planningMode==="individual"?selectedNurseId:null,proposal:Boolean(proposal),demo});
+          download(result.filename,result.blob,"application/pdf");
+        } finally {button.disabled=false;}
+        break;
+      }
       case "close": dialog.close(); stagedImport=null; break;
       case "edit-tiih": {
-        editingTiih=button.dataset.source; render();
+        tiihMode="single"; editingTiih=button.dataset.source; render();
         main.querySelector("#tiih-op").focus();
         break;
       }
+      case "tiih-mode": tiihMode=button.dataset.mode; syncTiihBatch(); break;
+      case "tiih-select-month":
+        main.querySelectorAll("[data-pick-tiih]").forEach(input=>tiihSelected.add(input.dataset.pickTiih));
+        tiihMode="batch"; syncTiihBatch(); break;
+      case "tiih-clear": tiihSelected.clear(); syncTiihBatch(); break;
+      case "tiih-apply-batch": commitTiihBatch(); break;
       case "edit-absence": absenceId=button.dataset.id; render(); break;
       case "cancel-absence": absenceId=""; render(); break;
       case "delete-absence": {
@@ -2389,13 +3004,14 @@
       }
     }
   }
-  dialog.addEventListener("close",()=>{stagedImport=null;historyFiles=null;historyNames=[];});
+  dialog.addEventListener("close",()=>{stagedImport=null;historyFiles=null;historyNames=[];tiihReview=null;});
   document.addEventListener("click",e=>{const b=e.target.closest("button[data-act]"); if(b) act(b).catch(infoError);});
   document.addEventListener("submit",e=>{if(e.target.dataset.form){e.preventDefault();submitForm(e.target).catch(infoError);}});
   document.addEventListener("input",e=>{
     const t=e.target;
     if(t.form && !dialog.contains(t)) formEdited=true;
     if(t.name==="duration" && t.form?.dataset.form==="tiih") syncTiih(t.form);
+    if(t.form?.dataset.form==="tiih-batch" && ["duration","offset"].includes(t.name)) tiihBatchValues[t.name]=t.value;
   });
   document.addEventListener("change",e=>{
     try {
@@ -2408,6 +3024,9 @@
         syncDatedNurses(form,form.elements.from.value,keep);
       }
       if(t.form?.dataset.form==="phase" && ["anchor","nurse"].includes(t.name)) syncPhase();
+      if(t.id==="include-lookahead") includeLookahead=t.checked;
+      if(t.id==="edit-day-date" && t.value && t.validity.valid) showDayEditor(t.value);
+      else if(t.form?.dataset.form==="edit-day" && t.id!=="edit-day-date") refreshDayEditor(t.form);
       if(t.id==="period"&&t.value) setPeriod(t.value);
       if(t.id==="individual-nurse") {selectedNurseId=t.value; render();}
       if(t.id==="effective"&&t.value) {
@@ -2416,6 +3035,13 @@
         main.querySelector("#team-management").innerHTML=globalThis.PlannerTeamManagement.view(state,{day:teamDay});
       }
       if(t.id==="tiih-op"||t.id==="tiih-source") syncTiih(t.form,t.id==="tiih-source");
+      if(t.hasAttribute("data-pick-tiih")) {
+        if(t.checked) tiihSelected.add(t.dataset.pickTiih); else tiihSelected.delete(t.dataset.pickTiih);
+        tiihMode="batch"; syncTiihBatch();
+      }
+      if(t.form?.dataset.form==="tiih-batch" && t.name==="operation") {
+        tiihBatchValues.operation=t.value; syncTiihBatch();
+      }
       if(t.id==="absence-mode") {
         const slot=t.value==="slot"; document.getElementById("times").style.display=slot?"":"none";
         document.getElementById("credit-label").textContent=slot?"Crédit total du créneau":"Crédit par jour du lundi au vendredi";
@@ -2431,7 +3057,7 @@
       canRefresh:()=>!demo && !dialog.open && !proposal && !busy && !formEdited,
       prepare:body=>body===null?D.newState(Number(today.slice(0,4))):D.migrateState(JSON.parse(body)),
       receive:value=>{state=value;proposal=null;absenceId="";notify();render();},
-      changed:syncStatus,
+      changed:()=>{if(!state && cloud.phase==="read-error") render(); else syncStatus();},
       saved:(message,warning)=>{if(!demo) notify(message+" Enregistré dans Google Sheets."+(warning?" "+warning:""));}
     });
     const refresh=()=>{if(cloudActive() && state && !document.hidden) void cloud.read();};
