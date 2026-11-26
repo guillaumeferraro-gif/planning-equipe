@@ -10,15 +10,44 @@
 
 Pour utiliser le planning hors ligne, [ouvrez le fichier HTML sur GitHub](./Planning-IDE.html), cliquez sur **Download raw file** (flèche vers le bas), puis double-cliquez sur le fichier téléchargé. Le navigateur conserve les données sur cet appareil. Exportez une sauvegarde JSON avant de changer de poste ou de navigateur, ou de déplacer le fichier HTML.
 
+## Google Sheets
+
+Pour travailler à plusieurs sur le même planning, ouvrez-le depuis un classeur Google Sheets privé. Son propriétaire installe le script une seule fois.
+
+1. Dans un classeur dédié au planning, ouvrez **Extensions → Apps Script**. Dans **Code.gs**, collez le contenu du [script PlanningGoogle.gs](./google/PlanningGoogle.gs), puis enregistrez le projet.
+2. Rechargez le classeur. Le menu **Planning IDE** apparaît en haut de la feuille. Si le menu tarde à apparaître, sélectionnez la fonction **onOpen** dans l’éditeur Apps Script, cliquez sur **Exécuter**, puis revenez au classeur.
+3. Dans **Planning IDE → Ouvrir le planning**, suivez la demande d’autorisation Google au premier lancement. Depuis **Partager**, accordez un accès **Éditeur** aux collègues qui doivent travailler sur le planning et conservez l’accès général **Limité**. Chaque collègue ouvre le même classeur et utilise ce menu.
+
+Pour reprendre le planning déjà présent sur votre ordinateur, ouvrez la version locale et choisissez **Imports et exports → Télécharger une sauvegarde JSON**. Dans le classeur, ouvrez **Imports et exports → Restaurer une sauvegarde complète**. Examinez le fichier et confirmez **Remplacer les données** si vous souhaitez qu’il devienne le planning de l’équipe. La version ouverte directement sur GitHub Pages garde sa propre copie sur l’appareil.
+
+Après une modification dans le classeur, attendez **Enregistré dans Google Sheets** avant de fermer la fenêtre. Si deux personnes enregistrent en même temps, celle qui reçoit **Conflit d’enregistrement** peut choisir **Exporter mon brouillon JSON**, puis **Recharger la version partagée** et y reprendre ses changements.
+
+L’onglet **Planning** du classeur présente une vue du planning enregistré. Pour modifier une garde, passez par **Planning IDE → Ouvrir le planning**. Le même menu propose **Actualiser la vue du classeur** et **Restaurer la sauvegarde précédente…**. Cette dernière commande demande confirmation avant de rétablir la version précédente pour toute l’équipe.
+
 ## Règles de l’équipe dans la version navigateur
 
-- L’équipe comprend sept IDE à **100 %** par défaut. Dans **Équipe et règles**, vous pouvez modifier les quotités et l’objectif annuel de temps de travail. Pour mettre à jour une équipe existante, cliquez sur **Mettre toute l’équipe à 100 %**, puis sur **Enregistrer l’équipe**. L’OAT 2026 est de **1 560 h par ETP**, du 1ᵉʳ janvier au 31 décembre.
-- Le SMUR fonctionne chaque jour avec une IDE de 8 h à 20 h et une IDE de 20 h à 8 h le lendemain. Le TIIH fonctionne **le mardi et le vendredi**, de 9 h à 16 h 42, hors jours fériés. Dans **TIIH**, une occurrence peut être supprimée, déplacée ou rétablie.
+- L’équipe démarre avec sept IDE à **100 %**. Dans **Équipe et règles**, vous pouvez adapter l’effectif, les quotités et l’objectif annuel de temps de travail. Pour mettre à jour une équipe existante, cliquez sur **Mettre toute l’équipe à 100 %**, puis sur **Enregistrer l’équipe**. L’OAT 2026 est de **1 560 h par ETP**, du 1ᵉʳ janvier au 31 décembre.
+- Le SMUR fonctionne chaque jour avec une IDE de **8 h à 20 h** et une IDE de **20 h à 8 h le lendemain**. Le TIIH fonctionne **le mardi, le jeudi et le vendredi**, hors jours fériés. Il commence à **9 h** et dure normalement **7 h 42**, soit une fin à **16 h 42**.
 - Deux plafonds s’appliquent au travail effectif de chaque IDE. Le maximum est de **48 h sur sept jours glissants** et de **44 h par semaine du lundi au dimanche**. Le repos minimum entre deux postes est de **12 h** selon les horaires affichés.
-- Une série comprend au plus **trois prises de poste consécutives**. Le générateur cherche à éviter les journées ou nuits isolées et vise **au plus deux jours de repos entre deux séries**. Il signale les écarts pour que vous puissiez examiner le planning proposé.
+- Après **trois dates consécutives de prise de poste**, les **deux jours suivants** sont obligatoirement sans nouvelle prise de poste. Une série du vendredi au dimanche impose donc le repos le lundi et le mardi. Le repos peut durer plus longtemps. Le générateur cherche aussi à éviter les journées et les nuits travaillées isolément.
 - Le week-end de nuit réunit les nuits de **vendredi, samedi et dimanche**. Le week-end de jour réunit **samedi et dimanche** et le générateur cherche à inclure le vendredi. Une IDE qui travaille le week-end bénéficie d’un repos de jour le lundi suivant.
 - Une période de nuit dure **14 à 21 jours calendaires**, repos compris. Le générateur tient compte de l’historique pour répartir les gardes de jour et de nuit entre les IDE.
 - Une absence est créditée de **7 h 42** par jour du lundi au vendredi. Un créneau individuel peut avoir une durée différente.
+
+## Gérer une arrivée, un départ ou une quotité temporaire
+
+Dans **Équipe et règles**, ouvrez **Effectif**, puis **Ajouter un agent**. Indiquez le nom, la date d’entrée et la quotité de base. Pour un départ, choisissez **Retirer un agent**, l’IDE et son dernier jour dans l’équipe. Les deux dates sont incluses. **Examiner le retrait** présente les postes en brouillon à réattribuer avant confirmation. S’il reste des postes confirmés ou verrouillés après le départ, l’application demande de les revoir. Les plannings et compteurs antérieurs restent consultables.
+
+Dans **Quotités temporaires**, cliquez sur **Ajouter une période** et choisissez l’IDE, le pourcentage et les dates de début et de fin incluses. Par exemple, une IDE dont la quotité de base est de 100 % peut passer à 80 % du 1ᵉʳ au 30 juin. Le 1ᵉʳ juillet, l’application reprend automatiquement la quotité de base applicable à cette date. Pour transférer les contrats et ces périodes sur un autre appareil, utilisez la sauvegarde JSON complète. Le CSV mensuel sert à transférer les postes.
+
+## Adapter un TIIH pour une seule journée
+
+Dans **TIIH**, cliquez sur **Modifier** sur la ligne du poste concerné. Dans **Adapter une journée**, choisissez l’action voulue, puis **Appliquer au TIIH**.
+
+- **Modifier la durée** conserve la date du poste. Saisissez la durée en heures et minutes, de `0:01` à `48:00`. Si le poste dépasse minuit, l’heure de fin précise le jour de sortie. Par exemple, `5:30` donne un TIIH de **9 h à 14 h 30**. **Rétablir la durée de 7 h 42** ramène ce poste à son horaire habituel.
+- **Supprimer** retire uniquement ce TIIH du planning. **Déplacer** le reporte à une autre date avec sa durée. **Restaurer** le remet à sa date d’origine avec la durée mémorisée.
+
+La durée du poste compte dans le temps de travail de l’IDE affectée. Le CSV mensuel reprend la durée des TIIH affectés, par exemple `TIIH (5:30)`. Pour conserver les suppressions, déplacements et durées personnalisées lors d’un changement d’appareil, emportez la **sauvegarde JSON complète** depuis **Imports et exports**.
 
 ## Importer un historique ou exporter le planning
 
