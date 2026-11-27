@@ -979,6 +979,10 @@
       Array.from({length:nightRotationMode(state)==="three"?3:2},()=>[]);
   }
 
+  function nightRoleReservesDay(slot,role) {
+    return Boolean(slot && (role===0 || (role===1 && (slot.mode==="two" || slot.index<7))));
+  }
+
   function nightRotationIssues(state,starts) {
     const names=new Map(state.nurses.map(n=>[n.id,n.name])),issues=new Map();
     for (const start of starts) {
@@ -1000,11 +1004,11 @@
             record(["roles",id,role,otherRole],id,[...worked,...roles[otherRole].get(id)],
               names.get(id)+" occupe les rôles IDE "+(role+1)+" et IDE "+(otherRole+1)+
               ". Chaque rôle doit être confié à une IDE différente.");
-          // The third nurse only relieves Tuesday–Thursday in week two.
-          // Their own night phase determines whether a day duty is allowed.
-          for (const day of (role<2?dayDuties.get(id):null)??[]) {
+          for (const day of dayDuties.get(id)??[]) {
+            if (!nightRoleReservesDay(nightPairSlot(state,day),role)) continue;
             record(["rest",role,id,day],id,[...worked,day],
-              names.get(id)+" a un poste de jour le "+day+" pendant sa quinzaine de nuit. Les dates sans nuit sont des repos.");
+              names.get(id)+" a un poste de jour le "+day+" pendant le roulement du rôle "+["A","B"][role]+
+              ". Nuits déjà attribuées à cette IDE dans la quinzaine : "+worked.join(", ")+".");
           }
         }
       }
@@ -1034,6 +1038,146 @@
   function pairTuesdayRestException(firstSlot,worked,offset) {
     return offset===4 && firstSlot?.index===4 && firstSlot.mode==="two" && worked[0]==="N" && worked[1]==="N" &&
       worked[2]==="N" && (!worked[3] || worked[3]==="-") && worked[4]==="N";
+  }
+
+  // Change one inferred regime around a manual duty. Actual duties and
+  // recorded phase anchors are evidence. An automatic phase alone is not.
+  function manualPhaseChanges(state,nurse,day,shift) {
+    const id=nurse.id,phaseAt=d=>state.phases[d]?.[id];
+    const night=shift==="N", {min,max}=phaseBounds(state.settings,"N");
+    const rows=Object.keys(state.phases).filter(d=>phaseAt(d)).sort();
+    const origin=(d,p)=>addDays(d,1-p.age);
+    const anchors=rows.filter(d=>phaseAt(d).locked).map(d=>({from:origin(d,phaseAt(d)),to:d,mode:phaseAt(d).mode}));
+    const lockedNight=anchors.find(a=>a.mode==="N" && a.from<=day && a.to>=day);
+    if (!night && lockedNight)
+      throw Error(nurse.name+" · la période de nuit est fixée par le repère verrouillé du "+lockedNight.to+".");
+    const lockedDay=anchors.find(a=>a.mode==="J" && a.from<=day && day<=a.to);
+    if (night && lockedDay)
+      throw Error(nurse.name+" · la période de jour est fixée par le repère verrouillé du "+lockedDay.to+".");
+    const periods=new Map();
+    for (const d of rows) {
+      const p=phaseAt(d);
+      if (p.mode==="N") periods.set(origin(d,p),d);
+    }
+    // Even with a missing cell, a later recorded age can establish which
+    // period contains this day. A CSV with shifts alone does not establish
+    // that two neighbouring night duties are in the same period.
+    const inferred=[...periods].find(([a,b])=>a<=day && day<=b);
+    const current=phaseAt(day)??(inferred?{mode:"N",age:serial(day)-serial(inferred[0])+1}:null);
+    if (night && !current) {
+      // Unknown dates can belong to the same night period. Actual day duties,
+      // locked day regimes and employment boundaries give it a finite extent.
+      let available=1;
+      for (const direction of [-1,1]) for (let n=1;n<min && available<min;n++) {
+        const d=addDays(day,direction*n),code=state.assignments[d]?.[id]?.shift;
+        if (!isActive(nurse,d) || code==="J" || code==="T" ||
+            anchors.some(a=>a.mode==="J" && a.from<=d && d<=a.to)) break;
+        available++;
+      }
+      if (available<min) throw Error(nurse.name+" · la nuit du "+day+" ne peut entrer que dans une période de "+
+        available+" jour(s) entre les limites connues. Il faut au moins "+min+" jours pour une période de nuit.");
+    }
+    if (!night && !current) {
+      // Two day duties bounding a real night leave a finite maximum length
+      // for its period, even when the imported roster has no phase entries.
+      for (const direction of [-1,1]) {
+        let sawNight=false;
+        for (let n=1;n<=min;n++) {
+          const d=addDays(day,direction*n),code=state.assignments[d]?.[id]?.shift;
+          if (code==="N") sawNight=true;
+          if (code==="J" || code==="T") {
+            if (sawNight) throw Error(nurse.name+" · les gardes consignées entre le "+
+              (direction<0?d:day)+" et le "+(direction<0?day:d)+" ne laissent pas les "+min+
+              " jours d’une période de nuit.");
+            break;
+          }
+        }
+      }
+    }
+    if (!current || (current.mode==="N")===night) return [];
+    if (current.locked) throw Error(nurse.name+" · le régime du "+day+" est verrouillé.");
+    const oldStart=night?null:origin(day,current),oldEnd=night?null:periods.get(oldStart);
+    const choices=[];
+    // A day duty can shorten a real night's phase at either edge. The
+    // previous nights must all remain within the same 14–21-day period.
+    if (!night) {
+      const tail=addDays(day,-1),head=addDays(day,1);
+      const from=serial(tail)-serial(oldStart)+1>=min?oldStart:addDays(day,-min);
+      const to=serial(oldEnd)-serial(head)+1>=min?oldEnd:addDays(day,min);
+      choices.push({from,to:tail},{from:head,to},{from:null,to:null});
+    } else {
+      for (let n=min;n<=max;n++)
+        for (let before=0;before<n;before++) {
+          const from=addDays(day,-before);
+          choices.push({from,to:addDays(from,n-1)});
+        }
+    }
+    let best=null,bestCost=Infinity;
+    for (const {from,to} of choices) {
+      if (from && (serial(to)-serial(from)+1>max ||
+          (nurse.active_from && from<nurse.active_from) || (nurse.active_until && to>nurse.active_until))) continue;
+      // A fresh interval may absorb an existing night period only in full.
+      // Adjacent night intervals must be a single, consistently aged period.
+      if (from && [...periods].some(([a,b])=>a!==oldStart && b>=addDays(from,-1) &&
+          a<=addDays(to,1) && !(a>=from && b<=to))) continue;
+      const first=oldStart && (!from || oldStart<from)?oldStart:from;
+      const last=oldEnd && (!to || oldEnd>to)?oldEnd:to;
+      const prefix=phaseAt(addDays(first,-1));
+      let dayAge=prefix?.mode==="J"?prefix.age:0;
+      const changes=[];
+      let valid=true,cost=0,extendsDay=true;
+      // Do not fabricate a night history to shorten a real period. Extra
+      // past dates counted toward its minimum must have recorded context.
+      const evidenceFrom=night?day:oldStart;
+      if (from && from<evidenceFrom && dates(from,addDays(evidenceFrom,-1)).some(d=>!phaseAt(d) &&
+          ![...periods].some(([start,end])=>start<=d && d<=end))) continue;
+      if (from && anchors.some(a=>a.mode==="J" && a.from<=to && from<=a.to)) continue;
+      for (const d of dates(first,last)) {
+        const isNight=Boolean(from && d>=from && d<=to),old=phaseAt(d);
+        const duty=state.assignments[d]?.[id]?.shift;
+        if (shifts.includes(duty) && (duty==="N")!==isNight) {valid=false;break;}
+        const mode=isNight?"N":"J",age=isNight?serial(d)-serial(from)+1:dayAge+1;
+        dayAge=isNight?0:age;
+        if (!old) continue;
+        if (old.mode===mode && old.age===age) continue;
+        if (old.locked) {valid=false;break;}
+        if (old.mode!==mode) cost+=10;
+        cost++;
+        changes.push({day:d,phase:{...old,mode,age}});
+      }
+      if (!valid) continue;
+      // Rejoin the following saved day phase, retaining its locked ages.
+      // No new phase cells are created, including in a blank following month.
+      for (const d of rows) if (d>last && extendsDay) {
+        const p=phaseAt(d),previous=phaseAt(addDays(d,-1));
+        if (p.mode!=="J" || (!previous && origin(d,p)>addDays(last,1))) {extendsDay=false;continue;}
+        const age=dayAge+serial(d)-serial(last);
+        if (p.age===age) {extendsDay=false;continue;}
+        if (p.locked) {valid=false;break;}
+        changes.push({day:d,phase:{...p,age}});cost++;
+      }
+      if (valid && cost<bestCost) {best=changes;bestCost=cost;}
+    }
+    if (!best) throw Error(nurse.name+" · le "+day+", ce poste est incompatible avec les gardes déjà inscrites ou les repères de période. Une période de nuit doit durer "+min+" à "+max+" jours.");
+    return best;
+  }
+
+  function adaptManualDutyPhases(before,candidate,day) {
+    const adjusted=[],changes=[];
+    for (const nurse of candidate.nurses) {
+      const shift=candidate.assignments[day]?.[nurse.id]?.shift;
+      if (!shifts.includes(shift) || before.assignments[day]?.[nurse.id]?.shift===shift) continue;
+      const edits=manualPhaseChanges(candidate,nurse,day,shift);
+      if (!edits.length) continue;
+      adjusted.push({nurse_id:nurse.id,start:edits[0].day,end:edits.at(-1).day});
+      for (const e of edits) changes.push({...e,id:nurse.id});
+    }
+    if (changes.length) {
+      const phases={...candidate.phases};
+      for (const e of changes) phases[e.day]={...phases[e.day],[e.id]:e.phase};
+      candidate.phases=phases;
+    }
+    return adjusted;
   }
 
   // A moving window's elapsed total is linear between starts, ends and their
@@ -1319,7 +1463,63 @@
   function planningVacancies(state,start,end) {
     return planningCoverage(state,start,end).vacancies;
   }
-  function planningProblems(state,start,end,{continuation=false}={}) {
+
+  function rosterDateKnown(state,day) {
+    const recorded=d=>Boolean(Object.keys(state.assignments[d]??{}).length || state.reviewed[d]?.length ||
+      Object.values(state.phases[d]??{}).some(p=>p.locked===false));
+    // Generated phase cells identify a processed date even if every duty is
+    // still open. A single missing team date bracketed on both sides also
+    // belongs to the roster. A lone manual phase anchor is not a roster.
+    return recorded(day) || (recorded(addDays(day,-1)) && recorded(addDays(day,1)));
+  }
+
+  function workGapDay(state,nurse,day,{assumePlanned=false}={}) {
+    const cell=state.assignments[day]?.[nurse.id];
+    if (!isActive(nurse,day) || cell?.locked || cell?.confirmed || shifts.includes(cell?.shift) ||
+        absenceOn(state,nurse.id,day)) return false;
+    return assumePlanned || rosterDateKnown(state,day);
+  }
+
+  function workGaps(state,start,end,{assumePlanned=false}={}) {
+    const result=[],periods=new Map();
+    const isRecorded=d=>rosterDateKnown(state,d);
+    const inside=dates(start,end);
+    const known=new Set(assumePlanned?inside:inside.filter(isRecorded));
+    if (!known.size) return [];
+    const roleFor=(slot,id)=>{
+      if (!periods.has(slot.start)) periods.set(slot.start,nightPairOwners(state,slot.start));
+      return periods.get(slot.start).findIndex(owners=>owners.length===1 && owners[0]===id);
+    };
+    for (const nurse of state.nurses) {
+      const free=d=>workGapDay(state,nurse,d,{assumePlanned:known.has(d)});
+      let first=start,last=end;
+      if (free(start)) while (free(addDays(first,-1))) first=addDays(first,-1);
+      if (free(end)) while (free(addDays(last,1))) last=addDays(last,1);
+      let run=null;
+      function finish() {
+        if (run && run.days>=7 && run.end>=start && run.start<=end) {
+          run.message=nurse.name+" · "+run.days+" jours consécutifs sans garde inscrite du "+run.start+" au "+run.end+"."+
+            (run.unknownDays?" "+run.unknownDays+" case(s) individuelle(s) non renseignée(s).":"")+
+            (run.nightRestDays===run.days?" Repos prévus par le roulement de nuit sur toute cette période.":"");
+          result.push(run);
+        }
+        run=null;
+      }
+      for (const day of dates(first,last)) {
+        if (!free(day)) {finish();continue;}
+        run??={nurse_id:nurse.id,start:day,end:day,days:0,unknownDays:0,nightRestDays:0};
+        run.end=day;
+        run.days++;
+        if (!state.assignments[day]?.[nurse.id] && !state.reviewed[day]?.includes(nurse.id)) run.unknownDays++;
+        const slot=nightPairSlot(state,day), role=slot?roleFor(slot,nurse.id):-1;
+        if (nightRoleReservesDay(slot,role) && role!==slot.role) run.nightRestDays++;
+      }
+      finish();
+    }
+    return result.sort((a,b)=>a.start.localeCompare(b.start) || a.nurse_id.localeCompare(b.nurse_id));
+  }
+
+  function planningProblems(state,start,end,{continuation=false,includeWorkGaps=true}={}) {
     const result=planningCoverage(state,start,end),warnings=[],nightOverruns=[];
     for (const issue of validateSchedule(state,start,end,false,{partial:true,continuation})) {
       if (issue.code==="night_overrun") nightOverruns.push(issue);
@@ -1327,7 +1527,7 @@
     }
     result.conflicts.sort((a,b)=>(a.day??"").localeCompare(b.day??""));
     nightOverruns.sort((a,b)=>a.start-b.start || a.nurse_id.localeCompare(b.nurse_id));
-    return {...result,warnings,nightOverruns,capacityNotes:[]};
+    return {...result,warnings,nightOverruns,workGaps:includeWorkGaps?workGaps(state,start,end):[],capacityNotes:[]};
   }
   function legacyShift(label, file, day) {
     requireValue(typeof label==="string","Poste illisible dans "+file+", jour "+day+".");
@@ -1448,7 +1648,7 @@
   globalThis.PlannerDomain=Object.freeze({SHIFT_MINUTES,SHIFT_LABELS,ABSENCE_KINDS,dates,addDays,weekday,
     monthBounds,previewClearMonth,previewClearRange,applyClearMonth,formatMinutes,parseDuration,newState,quotaOn,setContract,isHoliday,defaultTiih,tiihRequired,
     changeTiih,previewTiihBatch,applyTiihBatch,shiftInterval,absentFor,absenceOn,setAbsence,creditMinutes,validateState,annualTotals,validateSchedule,planningProblems,planningVacancies,
-    fullWeekendPairAt,newConsecutiveFullWeekends,nightRecoveryRequired,newNightExitRestConflicts,newNightRotationConflicts,nightRotationStart,nightRotationMode,setNightRotationMode,setNightRotationStart,setNightRotationRange,nightPairSlot,nightPairOwners,rollingDutyPeaks,pairTuesdayRestException,
+    fullWeekendPairAt,newConsecutiveFullWeekends,nightRecoveryRequired,newNightExitRestConflicts,newNightRotationConflicts,nightRotationStart,nightRotationMode,setNightRotationMode,setNightRotationStart,setNightRotationRange,nightPairSlot,nightPairOwners,nightRoleReservesDay,rollingDutyPeaks,pairTuesdayRestException,workGapDay,workGaps,adaptManualDutyPhases,
     importLegacyFiles,calendarWeekBounds,migrateState,phaseBounds,tiihSource,tiihDay,
     getTiihDuration,setTiihDuration,shiftMinutes,tiihWallEnd,isActive,activeOn:isActive,baseQuotaOn,
     setQuotaPeriod,removeQuotaPeriod,addNurse,nurseExitImpact,setNurseExit});
@@ -1591,6 +1791,82 @@
     }
   }
 
+  // Count rolling seven-day gaps once by their last date. Opaque dates outside
+  // the proposal and real unavailability break the run. An extra day in a long
+  // gap receives progressively more weight without rewarding isolated duties.
+  function gapCost(ctx,n,work,added=[],nightOnly=false) {
+    let run=0,score=0;
+    for(let j=priorDays-6;j<=ctx.endIndex+6;j++) {
+      if(!n.gapDays[j] || work[j] || added.includes(j) || (nightOnly && n.dayOpportunity[j])) {run=0;continue;}
+      run++;
+      if(run>=7 && j>=priorDays) score+=run-6;
+    }
+    return score;
+  }
+
+  function nightDayReserved(ctx,n,i) {
+    const slot=ctx.pairSlots[i];
+    if(!slot) return false;
+    const first=i-slot.index;
+    for(let j=first;j<first+14;j++)
+      if(n.work[j]==="N" && ctx.nightRoleReservesDay(slot,ctx.pairSlots[j].role)) return true;
+    return false;
+  }
+
+  // Reconsider only duties created by this search. A weekend unit moves as
+  // a whole; incoming staff must satisfy every hours, phase and recovery rule.
+  // An exchange is kept only when the two workers' combined gap cost improves.
+  function redistributeDayDuties(ctx,slots,occupied,index,path,pass) {
+    const assigned=slots.filter(s=>s.code!=="N" && s.positions.every(j=>j>=priorDays && j<=ctx.endIndex));
+    if(pass%2) assigned.reverse();
+    for(let sweep=0;sweep<3;sweep++) {
+      const oldCosts=new Map(ctx.nurses.map(n=>[n,gapCost(ctx,n,n.work)]));
+      if(![...oldCosts.values()].some(Boolean)) return;
+      let changed=false;
+      for(const slot of assigned) {
+        const giver=ctx.nurses.find(n=>slot.positions.every(j=>n.work[j]===slot.code));
+        if(!giver || !slot.positions.every(j=>giver.editable[j] && !occupied[index.get(giver)][j])) continue;
+        for(const j of slot.positions) giver.work[j]=null;
+        const loss=gapCost(ctx,giver,giver.work)-oldCosts.get(giver);
+        let winner=null,saving=0,nextPhases=null;
+        for(const n of slot.candidates) {
+          if(n===giver || !oldCosts.get(n) || !n.phases || slot.positions.some(j=>n.work[j] || nightDayReserved(ctx,n,j))) continue;
+          const gain=oldCosts.get(n)-gapCost(ctx,n,n.work,slot.positions)-loss;
+          if(gain<=saving) continue;
+          const previous=n.phases;
+          for(const j of slot.positions) n.work[j]=slot.code;
+          if(slot.positions.some(j=>previous[j]>0)) n.phases=path(n);
+          if(n.phases && slot.positions.every(j=>legalDay(ctx,n,j))) {
+            winner=n;nextPhases=n.phases;saving=gain;
+          }
+          n.phases=previous;
+          for(const j of slot.positions) n.work[j]=null;
+        }
+        if(winner) {
+          winner.phases=nextPhases;
+          for(const j of slot.positions) winner.work[j]=slot.code;
+          oldCosts.set(giver,gapCost(ctx,giver,giver.work));
+          oldCosts.set(winner,gapCost(ctx,winner,winner.work));
+          changed=true;
+        } else for(const j of slot.positions) giver.work[j]=slot.code;
+      }
+      if(!changed) break;
+    }
+  }
+
+  function nightRotationRestart(state,from,until) {
+    if(!from || !until || until<from) return null;
+    const D=globalThis.PlannerDomain;
+    const previous=state.settings.night_rotation_from;
+    if(!previous || D.addDays(previous,7)!==from || D.weekday(from)!==0) return null;
+    const rows=Object.entries(state.assignments);
+    if(rows.some(([date,row])=>date>until && Object.values(row).some(a=>shifts.includes(a.shift)))) return null;
+    const historical={...state,assignments:Object.fromEntries(rows.filter(([date])=>date<from))};
+    const earlier=D.dates(previous,D.addDays(from,-1));
+    if(!D.newNightRotationConflicts(null,historical,earlier).length) return null;
+    return {date:from,previous};
+  }
+
   function prepare(state, year, month, D, includeLookahead, resumeFrom, resumeUntil) {
     D.validateState(state);
     if (!Number.isInteger(year) || year < 1900 || year > 2200 ||
@@ -1648,8 +1924,9 @@
             initialLoads[y] += D.shiftMinutes(state, day, shift);
         }
       }
-      const known = [], savedPhase=[], savedDuty=[];
+      const known = [], savedPhase=[], savedDuty=[],gapDays=[];
       days.forEach((day, i) => {
+        gapDays[i]=D.workGapDay(state,nurse,day,{assumePlanned:i>=priorDays && i<=endIndex});
         const old = state.assignments[day]?.[nurse.id];
         const reviewed = state.reviewed[day]?.includes(nurse.id);
         editable[i] = active[i] && day >= start && day <= horizon && !old?.locked && !old?.confirmed && !shifts.includes(old?.shift);
@@ -1665,7 +1942,7 @@
         }
         available[i] = Object.fromEntries(shifts.map(code => [code, active[i] && !D.absentFor(state,nurse.id,day,code)]));
       });
-      return {id:nurse.id, person:nurse, active, quotas, work, editable, known, oldPhase, savedPhase, savedDuty, available,
+      return {id:nurse.id, person:nurse, active, quotas, work, editable, known, gapDays,oldPhase, savedPhase, savedDuty, available,
         lastEditableDay:endIndex,initialLoads, historicNights:0,phaseHistoryStart:Math.min(priorDays,rotationStart)};
     });
     // A required weekend unit can extend past the editable interval. The
@@ -1675,7 +1952,7 @@
     if (weekdays[endIndex]===4 || weekdays[endIndex]===5) boundaryWeekends.push(endIndex-weekdays[endIndex]+4);
     const context={days,start,end,horizon,endIndex,monthEnd,nurses,needed,shiftMinutes,shiftIntervals,restIntervals,
       weekdays,boundaryWeekends,rotationStart,pairSlots,
-      fullWeekendPairAt:D.fullWeekendPairAt,nightRecoveryRequired:D.nightRecoveryRequired,rollingDutyPeaks:D.rollingDutyPeaks,
+      nightRoleReservesDay:D.nightRoleReservesDay,fullWeekendPairAt:D.fullWeekendPairAt,nightRecoveryRequired:D.nightRecoveryRequired,rollingDutyPeaks:D.rollingDutyPeaks,
       pairTuesdayRestException:D.pairTuesdayRestException,
       firstMonday:priorDays-weekdays[priorDays],lastMonday:endIndex-weekdays[endIndex]};
     setWorkTargets(state,D,context);
@@ -1782,7 +2059,7 @@
   // and Wednesday without preventing Thursday or the following weekend.
   function nightOption(ctx,period,role,n,slots,random,path) {
     const own=period.owners[role],other=period.owners.some((owners,k)=>k!==role && owners.has(n));
-    if(other || (own.size && (!own.has(n) || own.size>1)) || (role<2 && period.dayOwners.has(n))) return null;
+    if(other || (own.size && (!own.has(n) || own.size>1)) || period.dayOwners[role].has(n)) return null;
     const eligible=slots.filter(s=>s.candidates.includes(n));
     if(!eligible.length && !own.has(n)) return null;
     const patterns=[];
@@ -1850,7 +2127,10 @@
           // proposal. Repeating an identical role is only a tie-breaker.
           const repeated=n.work.slice(Math.max(0,period.first-14),period.first).some((shift,j)=>
             shift==="N" && ctx.pairSlots[Math.max(0,period.first-14)+j]?.role===role);
-          option.score=option.count*10+random()*(pass%6===5?16:7)-fairness*0.7-dayCapacity*0.42-
+          const gapBenefit=gapCost(ctx,n,n.work)-gapCost(ctx,n,option.work);
+          const scarce=gapCost(ctx,n,n.work,[],true)-gapCost(ctx,n,option.work,[],true);
+          const continuityBonus=ctx.prioritizeContinuity && pass%5!==4 ? Math.min(3,Math.max(0,scarce))*75:0;
+          option.score=option.count*10+continuityBonus+Math.min(9,Math.sqrt(Math.max(0,gapBenefit))*0.8)+random()*(pass%6===5?16:7)-fairness*0.7-dayCapacity*0.42-
             (period.mode==="three"?Math.min(8,surplus/80):0)-(repeated?1.5:0);
           choices.push(option);
         }
@@ -1923,6 +2203,7 @@
     try {ctx=prepare(state,year,month,D,forecast,resumeFrom,resumeUntil);}
     catch (e) {return result("invalid_input",String(e.message||e));}
     if (!ctx?.nurses) return failure;
+    ctx.prioritizeContinuity=options.prioritizeContinuity;
     const {nurses,days,weekdays,endIndex}=ctx;
     const baseline=D.planningProblems(state,ctx.start,ctx.horizon,{continuation:Boolean(resumeFrom)});
     const unchanged={...failure,start:ctx.start,end:ctx.horizon,added:0,vacancies:baseline.vacancies,
@@ -1943,12 +2224,13 @@
       if(!slot) continue;
       let p=periods.get(slot.start);
       if(!p) {
-        p={start:slot.start,first:i-slot.index,mode:slot.mode,dayOwners:new Set(),
+        p={start:slot.start,first:i-slot.index,mode:slot.mode,dayOwners:Array.from({length:slot.roleCount},()=>new Set()),
           owners:Array.from({length:slot.roleCount},()=>new Set()),groups:Array.from({length:slot.roleCount},()=>[])};
         periods.set(slot.start,p);
       }
       for(const n of fixed[i].N) p.owners[slot.role].add(n);
-      for(const c of ["J","T"]) for(const n of fixed[i][c]) p.dayOwners.add(n);
+      for(const c of ["J","T"]) for(const n of fixed[i][c]) for(let k=0;k<slot.roleCount;k++)
+        if(D.nightRoleReservesDay(slot,k)) p.dayOwners[k].add(n);
     }
     const slots=[];
     for(let i=priorDays;i<=endIndex;i++) for(const code of shifts) {
@@ -1987,12 +2269,22 @@
       const path=(n,trial,role)=>unboundedDayTrajectory(n,days,bounds,i=>{
         // The relief nurse's 14–21 day phase can straddle the fortnight;
         // actual day duties and existing phases still constrain this path.
-        const preferredStart=trial?trial.first+(role===2?[7,0,4][pass%3]:0):0;
+        const offset=role===2?[7,0,4][pass%3]:
+          role===1 && trial?.mode==="three"?[-7,-4,0][pass%3]:0;
+        const preferredStart=trial?trial.first+offset:0;
         const span=trial && i>=preferredStart && i<preferredStart+14;
         if(span) return i-preferredStart+1;
         return -1;
       },false);
-      for(const n of order) n.phases=path(n);
+      for(const n of nurses) {
+        n.phases=order.includes(n)?path(n):null;
+        const dayPossible=(j,code)=>n.phases?.[j]<=0 && n.available[j]?.[code] &&
+          (code!=="T" || ctx.needed[j]) && n.editable[j] && !fixed[j][code].length;
+        n.dayOpportunity=days.map((_,j)=>{
+          const w=weekdays[j],other=w===5?j+1:w===6?j-1:j;
+          return ["J","T"].some(code=>dayPossible(j,code) && dayPossible(other,code));
+        });
+      }
       const allocated=allocateNightRoles(ctx,[...periods.values()].filter(p=>p.groups.some(g=>g.length)),random,path,pass);
       let count=allocated,smur=allocated;
       const sequence=slots.map(slot=>{
@@ -2011,10 +2303,9 @@
         for(const n of slot.candidates) {
           if(!n.phases || positions.some(j=>n.work[j] && n.work[j]!==code)) continue;
           let cost=random()*7;
-          const pair=ctx.pairSlots[slot.i];
-          const first=pair?slot.i-pair.index:slot.i;
-          if(pair && code!=="N" && n.work.slice(first,first+14).some((shift,j)=>
-            shift==="N" && ctx.pairSlots[first+j]?.role<2)) continue;
+          if(code!=="N" && positions.some(j=>nightDayReserved(ctx,n,j))) continue;
+          const gapBenefit=gapCost(ctx,n,n.work)-gapCost(ctx,n,n.work,open);
+          cost-=Math.min(21,Math.sqrt(Math.max(0,gapBenefit))*2.1);
           if(code==="N") cost+=Math.min(15,n.nightCount*0.4);
           else {
             const year=days[slot.i].slice(0,4);
@@ -2062,8 +2353,7 @@
         const daytime=sequence.map(s=>s.slot).filter(s=>s.mon===monday && s.code!=="N");
         let capacity=0;
         for(const slot of daytime) if(slot.code==="J") {
-          const pair=ctx.pairSlots[slot.i],first=pair?slot.i-pair.index:slot.i;
-          capacity+=slot.candidates.filter(n=>n.phases && (!pair || !n.work.slice(first,first+14).some((shift,j)=>shift==="N" && ctx.pairSlots[first+j]?.role<2)) &&
+          capacity+=slot.candidates.filter(n=>n.phases && !nightDayReserved(ctx,n,slot.i) &&
             slot.positions.every(j=>n.phases[j]<=0)).length*slot.open.length;
         }
         const priority=pass%4===0?monday:pass%4===1?-monday:
@@ -2096,6 +2386,8 @@
           nurses.forEach((n,k)=>{n.work=weekBest.rows[k];n.phases=weekBest.phases[k];});
         }
       }
+      redistributeDayDuties(ctx,slots,occupied,nurseIndex,path,pass);
+      for(const slot of slots) if(slot.code!=="N" && slot.open.every(j=>!nurses.some(n=>n.work[j]===slot.code))) place(slot);
       if(!count || refs.some(ref=>!differentDutyCells(ref,nurses.map(n=>n.work),ctx.monthEnd,true))) continue;
       const nightValues=order.map(n=>n.nightCount);
       const average=nightValues.reduce((sum,v)=>sum+v,0)/nightValues.length;
@@ -2106,7 +2398,9 @@
         if(weekdays[j]===5 && n.work[j]==="J" && n.work[j-1]!=="J") shortWeekend++;
       }
       const nightExcess=order.reduce((sum,n)=>sum+nightPeak(ctx,n.work,priorDays,endIndex),0);
-      const score=[smur,count,allocated,-nightExcess,-nightVariance,-isolated,-shortWeekend];
+      const gaps=order.reduce((sum,n)=>sum+gapCost(ctx,n,n.work),0);
+      const prefix=ctx.prioritizeContinuity?[-gaps,smur]:[smur,-gaps];
+      const score=[...prefix,count,-nightExcess,allocated,-nightVariance,-isolated,-shortWeekend];
       const key=bestScore?score.findIndex((v,k)=>v!==bestScore[k]):-1;
       if(bestScore && (key<0 || score[key]<bestScore[key])) continue;
       const candidate=JSON.parse(JSON.stringify(state));
@@ -2124,7 +2418,7 @@
           (candidate.phases[days[j]]??={})[n.id]={mode:phase>0?"N":"J",age:Math.abs(phase),locked:false};
         }
       }
-      const checked=D.planningProblems(candidate,ctx.start,ctx.horizon,{continuation:Boolean(resumeFrom)});
+      const checked=D.planningProblems(candidate,ctx.start,ctx.horizon,{continuation:Boolean(resumeFrom),includeWorkGaps:false});
       if(checked.conflicts.some(i=>!present.has([i.code,i.day,i.nurse_id,i.message].join("|")))) continue;
       const added=baseline.vacancies.length-checked.vacancies.length;
       if(!added) continue;
@@ -2139,13 +2433,13 @@
         changedAssignments:refs.length?differentDutyCells(refs[0],nurses.map(n=>n.work),ctx.monthEnd):0,
         nightPattern:summarizeNights(candidate,ctx,D)};
       bestScore=score;
-      if(smur===totalSmur && added===baseline.vacancies.length) firstComplete??=now();
+      if(smur===totalSmur && added===baseline.vacancies.length && gaps===0) firstComplete??=now();
     }
     return best||unchanged;
   }
 
   function generate(input,year,month,{timeLimitMs=1800,seed=Date.now(),includeLookahead=false,differentFrom=[],
-      resumeFrom=null,resumeUntil=null,replanUnlocked=false,nightRelief=null}={}) {
+      resumeFrom=null,resumeUntil=null,replanUnlocked=false,nightRelief=null,restartNightRotation=null,prioritizeContinuity=false}={}) {
     const D=globalThis.PlannerDomain;
     let state,start,end,horizon,replanned=false,source,referenceWasComplete=false;
     const refs=Array.isArray(differentFrom)?differentFrom:[differentFrom];
@@ -2169,6 +2463,12 @@
       // Record the choice for the complete calendar fortnight, but only on this
       // working copy. A different default later must not reinterpret saved shifts.
       state.settings.night_relief_periods={...state.settings.night_relief_periods};
+      if(restartNightRotation!=null) {
+        const restart=resumeFrom && nightRotationRestart(state,start,end);
+        if(!restart || restart.date!==restartNightRotation)
+          throw Error("La reprise du roulement à cette date déplacerait une quinzaine déjà enregistrée ou ne correspond pas à la fin de la première semaine historique.");
+        D.setNightRotationStart(state,restart.date);
+      }
       if(nightRelief!==null) {
         if(!["two","three"].includes(nightRelief)) throw Error("Choisissez le roulement à deux ou trois IDE.");
         D.setNightRotationRange(state,start,horizon,nightRelief);
@@ -2192,7 +2492,7 @@
     const explanation="Les disponibilités, les postes déjà fixés et les repos peuvent laisser des postes à pourvoir.";
     const fail=result("infeasible",explanation);
     const random=randomGenerator(seed),deadline=now()+Math.max(100,Math.min(15000,Number(timeLimitMs)||1800));
-    const proposal=partialProposal(state,year,month,D,{forecast,resumeFrom,resumeUntil},fail,random,deadline,refs);
+    const proposal=partialProposal(state,year,month,D,{forecast,resumeFrom,resumeUntil,prioritizeContinuity:prioritizeContinuity===true},fail,random,deadline,refs);
     if(proposal.status!=="invalid_input") {
       const pattern=proposal.nightPattern??summarizeNights(state,{start,horizon},D);
       proposal.reliefVacancies=pattern.periods.flatMap(p=>p.mode==="three"?p.roles[2].vacantDays:[]);
@@ -2213,7 +2513,7 @@
       proposal.changedAssignments=changed;
       proposal.replanUnlocked=true;
     }
-    if(referenceWasComplete && proposal.status==="partial")
+    if(referenceWasComplete && proposal.status==="partial" && !prioritizeContinuity)
       return result("no_alternative","Aucune autre proposition complète compatible trouvée sur cette période.");
     if(proposal.candidate && proposal.nightPattern) {
       // Only the opposite role's dates are certain rest. Leave that worker's
@@ -2226,7 +2526,10 @@
           if(others.some(r=>r.nurseIds.includes(id))) continue;
           const person=candidate.nurses.find(n=>n.id===id);
           for(const other of others) for(const date of other.scheduledDays) {
-            if(holder.role==="C" && candidate.phases[date]?.[id]?.mode!=="N") continue;
+            const slot=D.nightPairSlot(candidate,date),k=period.roles.indexOf(holder);
+            const recovery=period.mode==="three" && k===1 && [7,8].includes(slot.index) &&
+              [4,5,6].every(offset=>candidate.assignments[D.addDays(period.start,offset)]?.[id]?.shift==="N");
+            if(!D.nightRoleReservesDay(slot,k) && candidate.phases[date]?.[id]?.mode!=="N" && !recovery) continue;
             if(!D.isActive(person,date) || D.absenceOn(candidate,id,date) || candidate.assignments[date]?.[id]) continue;
             (candidate.assignments[date]??={})[id]={shift:"-",locked:false,confirmed:false};
             const reviewed=candidate.reviewed[date]??=[];
@@ -2235,10 +2538,13 @@
         }
       }
       proposal.candidate=candidate;
+      proposal.restartNightRotation=restartNightRotation;
+      proposal.workGaps=D.workGaps(candidate,start,horizon,{assumePlanned:true});
     }
+    proposal.prioritizeContinuity=prioritizeContinuity===true;
     return proposal;
   }
-  globalThis.PlannerEngine=Object.freeze({generate,summarizeNights:(state,start,end)=>
+  globalThis.PlannerEngine=Object.freeze({generate,nightRotationRestart,summarizeNights:(state,start,end)=>
     summarizeNights(state,{start,horizon:end},globalThis.PlannerDomain)});
 })();
 
@@ -2571,6 +2877,28 @@
     if(conflicts.length) throw Error(conflicts.map(c=>c.message).join("\n"));
   }
 
+  const cachedProblems=new WeakMap();
+  function datedErrors(state,day) {
+    return D.validateSchedule(state,day,day,false,{partial:true}).filter(i=>i.severity==="error");
+  }
+  function recordChanges(state,day,next,changes) {
+    const reviewed=[...new Set([...(state.reviewed[day]||[]),...changes.map(c=>c.id)])];
+    const candidate={...state,assignments:{...state.assignments,[day]:next},reviewed:{...state.reviewed,[day]:reviewed}};
+    const inheritedRole=D.newNightRotationConflicts(state,candidate,[day]);
+    if(inheritedRole.length) throw Error(inheritedRole.map(c=>c.message).join("\n"));
+    const phaseChanges=D.adaptManualDutyPhases(state,candidate,day);
+    checkWeekends(state,candidate,day);
+    const recovery=D.newNightExitRestConflicts(state,candidate,[day]);
+    if(recovery.length) throw Error(recovery.map(c=>c.message).join("\n"));
+    const ids=new Set(changes.map(c=>c.id));
+    let byDay=cachedProblems.get(state);
+    if(!byDay) {byDay=new Map();cachedProblems.set(state,byDay);}
+    if(!byDay.has(day)) byDay.set(day,new Set(datedErrors(state,day).map(i=>i.message)));
+    const previous=byDay.get(day);
+    const problem=datedErrors(candidate,day).find(i=>ids.has(i.nurse_id) && !previous.has(i.message));
+    if(problem) throw Error(problem.message);
+    return {changes,candidate,phaseChanges};
+  }
   function edit(state,day,choices,lock) {
     const old = state.assignments[day] || {}, next = {...old}, wanted = new Map();
     for (const role of roles) {
@@ -2601,12 +2929,32 @@
       changes.push({id,name:nurse.name,before,after});
     }
     if (!changes.length) return {candidate:state,changes};
-    const reviewed = [...new Set([...(state.reviewed[day]||[]),...changes.map(c=>c.id)])];
-    const candidate={...state,assignments:{...state.assignments,[day]:next},reviewed:{...state.reviewed,[day]:reviewed}};
-    checkScheduleChange(state,candidate,day);
-    return {changes,candidate};
+    return recordChanges(state,day,next,changes);
   }
-  globalThis.PlannerDayEditor=Object.freeze({edit,owners,protectedCell,checkWeekends,checkScheduleChange});
+  function cell(state,day,id,shift,{locked=false,confirmed=false}={}) {
+    const row=state.assignments[day]||{}, prior=row[id], nurse=state.nurses.find(n=>n.id===id);
+    if(!nurse || !D.isActive(nurse,day)) throw Error("Cette IDE est hors effectif le "+day+".");
+    if(!["-",...roles].includes(shift)) throw Error("Poste inconnu.");
+    if(confirmed && (shift==="-" || D.shiftInterval(day,shift,"elapsed",state)[1]>Date.now()/60000))
+      throw Error("Seul un poste terminé peut être confirmé.");
+    const next={...row,[id]:{shift,locked,confirmed}}, before=prior?.shift||"-";
+    if(before===shift) {
+      const reviewed=[...new Set([...(state.reviewed[day]||[]),id])];
+      return {candidate:{...state,assignments:{...state.assignments,[day]:next},reviewed:{...state.reviewed,[day]:reviewed}},changes:[],phaseChanges:[]};
+    }
+    if(protectedCell(prior)) throw Error("La case de "+nurse.name+" est protégée le "+day+".");
+    if(shift==="T"&&!D.tiihRequired(state,day)) throw Error("Le TIIH est fermé le "+day+".");
+    if(shift!=="-"&&D.absentFor(state,id,day,shift)) throw Error(nurse.name+" est en absence pendant ce poste le "+day+".");
+    const changes=[{id,name:nurse.name,before,after:shift}];
+    for(const holder of shift==="-"?[]:owners(row,shift)) {
+      const other=state.nurses.find(n=>n.id===holder);
+      if(protectedCell(row[holder])) throw Error(D.SHIFT_LABELS[shift]+" du "+day+" est déjà attribué à "+other.name+" et protégé.");
+      next[holder]={shift:"-",locked:false,confirmed:false};
+      changes.push({id:holder,name:other.name,before:shift,after:"-"});
+    }
+    return recordChanges(state,day,next,changes);
+  }
+  globalThis.PlannerDayEditor=Object.freeze({edit,cell,owners,protectedCell,checkWeekends,checkScheduleChange});
 })();
 
 </script>
@@ -2779,6 +3127,11 @@
       p.text(details.join("   ·   "),margin,y+5,9,{bold:true,color:colors.teal});
       y+=16;
     }
+    if (job.workGaps.length) {
+      const count=job.workGaps.length;
+      p.text(count+" période"+(count>1?"s":"")+" de sept jours ou plus sans garde · détail en fin de document",margin,y+5,9,{bold:true,color:colors.teal});
+      y+=16;
+    }
     return y+7;
   }
   function footer(p,job,index,total) {
@@ -2904,7 +3257,7 @@
   function conflictPages(pdf,job) {
     const conflicts=job.problems.conflicts.filter(i=>!job.person || i.nurse_id===job.person.id);
     const notes=job.person?[]:(job.problems.capacityNotes||[]);
-    if(!conflicts.length && !notes.length && !job.nightOverruns.length) return [];
+    if(!conflicts.length && !notes.length && !job.nightOverruns.length && !job.workGaps.length) return [];
     const pages=[];
     let page,y,heading;
     function next() {
@@ -2916,7 +3269,7 @@
       {message:"Dans la fonction publique hospitalière, la limite de référence est de 48 h de travail effectif sur sept jours, nuits comprises (article 6 du décret n° 2002-9). Ces dépassements sont à examiner avec l’établissement."},
       ...job.nightOverruns
     ]:[];
-    for(const [title,items] of [["Dépassements de 48 h en nuits seules",nightItems],["Couverture des nuits",notes],["Conflits à examiner",conflicts]]) {
+    for(const [title,items] of [["Périodes sans garde à examiner",job.workGaps],["Dépassements de 48 h en nuits seules",nightItems],["Couverture des nuits",notes],["Conflits à examiner",conflicts]]) {
       if(!items.length) continue;
       heading=title;
       if(!page || y>page.h-88) next();
@@ -2941,12 +3294,13 @@
     const monthName=capital(monthFmt.format(utc(days[0])));
     const problems=D.planningProblems(state,days[0],days.at(-1));
     const nightOverruns=(problems.nightOverruns||[]).filter(i=>!person || i.nurse_id===person.id);
+    const workGaps=(problems.workGaps||[]).filter(gap=>!person || gap.nurse_id===person.id);
     const openByDay=new Map();
     for(const {day,shift} of problems.vacancies) {
       if(!openByDay.has(day)) openByDay.set(day,[]);
       openByDay.get(day).push(shift);
     }
-    const job={state,days,roster,person,proposal,demo,monthName,problems,openByDay,nightOverruns,
+    const job={state,days,roster,person,proposal,demo,monthName,problems,openByDay,nightOverruns,workGaps,
       unresolved:Boolean(problems.vacancies.length||problems.conflicts.length),
       monthOnly:new Intl.DateTimeFormat("fr-FR",{month:"long",timeZone:"UTC"}).format(utc(days[0])),stamp:stampFmt.format(new Date())};
     const pdf=new PdfFile(), pages=person?individualPages(pdf,job):teamPages(pdf,job);
@@ -3191,8 +3545,21 @@
     summary.textContent="Dans cet intervalle, "+(protectedDuties+mutable)+" gardes sont déjà attribuées. "+
       (form.elements.mode.value==="replan"?mutable+" peuvent être réattribuées ou rester à pourvoir. "+protectedDuties+" sont protégées.":
         "Elles seront toutes conservées. Seuls les postes vacants seront à attribuer.");
-    const start=D.nightRotationStart(state,from.value);
-    const rotationState={...state,settings:{...state.settings,night_rotation_from:start}};
+    const restart=E.nightRotationRestart(state,from.value,until.value||range()[1]),input=form.elements.restart_rotation;
+    const box=form.querySelector("[data-restart-option]");
+    box.hidden=!restart;
+    input.disabled=!restart;
+    if(!restart) input.checked=false;
+    else {
+      form.querySelector("[data-restart-title]").textContent="Commencer la nouvelle trame le lundi "+shortDay(restart.date);
+      form.querySelector("[data-restart-context]").textContent="La quinzaine commencée le "+shortDay(restart.previous)+" comporte des rôles hérités incompatibles. Les gardes avant la reprise restent enregistrées et comptent pour les repos et les heures.";
+    }
+    const start=input.checked?restart.date:D.nightRotationStart(state,from.value);
+    const rotationState={...state,settings:{...state.settings,night_relief_periods:{...state.settings.night_relief_periods}}};
+    const removed=input.checked?D.setNightRotationStart(rotationState,start):[];
+    rotationState.settings.night_rotation_from=start;
+    form.querySelector("[data-restart-impact]").textContent=input.checked?"Les quinzaines suivantes seront comptées depuis le "+shortDay(start)+". "+
+      (removed.length?"Choix de relève à redéfinir pour les anciennes quinzaines du "+removed.map(shortDay).join(", ")+".":""):"";
     const periods=new Map();
     for(const day of scope) {
       const slot=D.nightPairSlot(rotationState,day);
@@ -3233,6 +3600,9 @@
       '<div class="fields"><label>Premier jour à compléter<input type="date" name="from" required min="'+start+'" max="'+end+'" value="'+from+'"></label>'+
       '<label>Dernier jour à compléter<input type="date" name="until" min="'+from+'" max="'+end+'" value="'+until+'"></label></div>'+
       reliefSelector(trial?"two":preserved?.nightRelief||"",true)+
+      '<div data-restart-option hidden><label><input type="checkbox" name="restart_rotation"'+(preserved?.restartNightRotation?' checked':'')+'> <span data-restart-title></span></label><p class="hint" data-restart-context></p><p class="hint" data-restart-impact aria-live="polite"></p></div>'+
+      '<label><input type="checkbox" name="prioritize_continuity"'+(preserved?.prioritizeContinuity?' checked':'')+'> Priorité aux IDE sans garde depuis sept jours</label>'+
+      '<p class="hint">Par défaut, le calcul couvre d’abord les SMUR. Avec cette option, il cherche en priorité à réduire les périodes sans garde, même si davantage de SMUR restent à pourvoir.</p>'+
       (trial&&proposal?'<p class="hint">Cet essai repart du planning enregistré. Vous pourrez comparer la nouvelle proposition avant de la conserver.</p>':'')+
       '<p data-replan-count aria-live="polite"></p><p>Les gardes et les repos verrouillés ou confirmés sont conservés. Une date de fin vide correspond à la fin du mois.</p>'+
       '<p>Les dates en dehors de l’intervalle restent telles que vous les avez saisies, y compris les postes encore vacants. Les gardes déjà prévues comptent pour les heures, les repos et le cumul des nuits.</p>'+
@@ -3301,10 +3671,10 @@
       const caption=vacancies.length+' poste'+(vacancies.length>1?'s':'')+' à pourvoir';
       html+='<details class="coverage-list"'+(empty?'':' open')+'><summary>'+esc(caption)+'</summary>'+
         '<div class="scroll" role="region" aria-label="Postes à pourvoir" tabindex="0"><table><thead><tr><th scope="col">Date</th><th scope="col">Poste</th><th scope="col">Horaire</th>'+
-        (hasReasons?'<th scope="col">Motif établi</th>':'')+(preview?'':'<th scope="col">Action</th>')+'</tr></thead><tbody>'+
+        (hasReasons?'<th scope="col">Motif établi</th>':'')+'<th scope="col">Action</th></tr></thead><tbody>'+
         vacancies.map(v=>'<tr><th scope="row">'+esc(shortDay(v.day))+'</th><td>'+esc(D.SHIFT_LABELS[v.shift])+'</td>'+
           '<td>'+esc(shiftHours(s,v.day,v.shift))+'</td>'+(hasReasons?'<td>'+esc(v.reason||"")+'</td>':'')+
-          (preview?'':'<td>'+edit(v.day,v.shift)+'</td>')+'</tr>').join("")+'</tbody></table></div></details>';
+          '<td>'+btn("duty-options","IDE possibles","mini",dataAtt("day",v.day)+' '+dataAtt("role",v.shift)+' aria-label="'+esc("IDE possibles pour "+D.SHIFT_LABELS[v.shift]+" du "+shortDay(v.day))+'"')+' '+edit(v.day,v.shift)+'</td></tr>').join("")+'</tbody></table></div></details>';
     }
     if(conflicts.length) {
       html+='<details class="coverage-list" open><summary>'+conflicts.length+' conflit'+(conflicts.length>1?'s':'')+' à examiner</summary>'+
@@ -3413,9 +3783,9 @@
     const partial=proposal?.status==="partial";
     const attempted=generationFailure?.noAddition?generationFailure:null;
     const scopeStart=proposal?.start||proposal?.resumeFrom||attempted?.start||start, scopeEnd=proposal?.end||attempted?.end||end;
-    const checkState=attempted?.resumeFrom?{...s,settings:{...s.settings,night_rotation_from:D.nightRotationStart(s,attempted.resumeFrom)}}:s;
+    const checkState=attempted?.resumeFrom?{...s,settings:{...s.settings,night_relief_periods:{...s.settings.night_relief_periods},night_rotation_from:D.nightRotationStart(s,attempted.resumeFrom)}}:s;
+    if(attempted?.restartNightRotation) D.setNightRotationStart(checkState,attempted.restartNightRotation);
     if(attempted?.nightRelief && attempted.resumeFrom) {
-      checkState.settings.night_relief_periods={...s.settings.night_relief_periods};
       D.setNightRotationRange(checkState,scopeStart,scopeEnd,attempted.nightRelief);
     }
     const problems=D.planningProblems(checkState,scopeStart,scopeEnd,{continuation:Boolean(proposal?.resumeFrom||attempted?.resumeFrom)});
@@ -3444,10 +3814,18 @@
     if(proposal) {
       const changed=proposal.changedAssignments;
       const diff=changed>0?'<p><strong>'+changed+' case'+(changed>1?'s d’affectation modifiées':' d’affectation modifiée')+'</strong> par rapport '+(proposal.afterPreview?'à la proposition précédente.':'au planning enregistré.')+'</p>':'';
-      let impact="";
+      let impact=proposal.restartNightRotation?'<p>En conservant cette proposition, vous fixerez le premier lundi de la nouvelle trame au '+esc(shortDay(proposal.restartNightRotation))+'. Les gardes antérieures resteront dans l’historique.</p>':"";
+      if(proposal.resumeFrom) {
+        const checks=D.dates(scopeStart,scopeEnd);
+        const smur=value=>checks.reduce((sum,d)=>sum+["J","N"].filter(k=>Object.values(value.assignments[d]||{}).some(a=>a.shift===k)).length,0);
+        const beforeGaps=D.workGaps(state,scopeStart,scopeEnd).length,afterGaps=D.workGaps(s,scopeStart,scopeEnd,{assumePlanned:true}).length;
+        impact+='<p>'+ (proposal.prioritizeContinuity?"Priorité choisie · réduire les périodes sans garde. ":"Priorité choisie · couvrir les SMUR. ")+
+          'SMUR attribués sur les dates demandées · '+smur(state)+' avant, '+smur(s)+' proposés sur '+(2*checks.length)+
+          '. Périodes d’au moins sept jours sans garde · '+beforeGaps+' avant, '+afterGaps+' dans la proposition.</p>';
+      }
       if(proposal.nightRelief && proposal.nightPattern?.periods?.length) {
         const periods=proposal.nightPattern.periods.map(p=>"du "+shortDay(p.start)+" au "+shortDay(p.end));
-        impact='<p>En conservant cette proposition, vous appliquerez le roulement '+(proposal.nightRelief==="two"?"sans relève":"avec relève")+
+        impact+='<p>En conservant cette proposition, vous appliquerez le roulement '+(proposal.nightRelief==="two"?"sans relève":"avec relève")+
           ' '+esc(periods.join(" et "))+'.</p>';
       }
       if(proposal.replanUnlocked) {
@@ -3479,6 +3857,8 @@
     const person=roster.find(n=>n.id===selectedNurseId)??roster[0];
     if(person) selectedNurseId=person.id;
     const individual=planningMode==="individual";
+    const gaps=D.workGaps(s,scopeStart,scopeEnd,{assumePlanned:Boolean(proposal)}).filter(g=>!individual||g.nurse_id===person?.id);
+    out+=workGapView(gaps,scopeStart,scopeEnd);
     out+=nightHoursView((problems.nightOverruns||[]).filter(entry=>!individual || entry.nurse_id===person?.id));
     out+='<section class="panel"><div class="panelhead"><div><h2>'+(partial?"Planning proposé · brouillon":proposal?"Planning proposé":savedMonth?"Planning enregistré":"Planning à remplir")+'</h2><p class="subtle">'+(proposal?"Consultez les postes avant de conserver la proposition.":"Sélectionnez un poste ou une journée pour modifier l’affectation.")+'</p></div>'+
       '<div class="actions"><div class="weekbar viewbar" role="group" aria-label="Vue du planning">'+btn("planning-mode","Équipe","",dataAtt("mode","team")+' aria-pressed="'+!individual+'"')+btn("planning-mode","Par IDE","",dataAtt("mode","individual")+' aria-pressed="'+individual+'"')+'</div>'+
@@ -3546,7 +3926,7 @@
       }).join("")+'</tr>':'';
     const adjusted=shown.filter(day=>D.tiihRequired(s,day) && D.shiftMinutes(s,day,"T")!==D.SHIFT_MINUTES.T);
     const times=adjusted.length?'<p class="tiih-adjusted"><strong>Horaires TIIH modifiés</strong> · '+adjusted.map(day=>esc(shortDay(day))+' ('+tiihHours(day,D.shiftMinutes(s,day,"T"))+')').join(' · ')+'</p>':"";
-    return '<div class="weekbar date-range" role="group" aria-label="Jours du mois">'+pages.join("")+'</div><div class="scroll"><table class="grid'+(full?" full-grid":"")+'"><thead><tr><th scope="col">IDE</th>'+headings+'</tr></thead><tbody>'+rows+openRow+'</tbody></table></div><div class="legend"><span><b class="J"></b>J · SMUR jour</span><span><b class="N"></b>N · SMUR nuit</span><span><b class="T"></b>T · TIIH</span><span><b class="A"></b>A · Absence</span><span>— Repos</span><span>? Non renseigné</span><span>× Hors effectif</span><span>• Poste protégé</span></div>'+times;
+    return '<div class="weekbar date-range" role="group" aria-label="Jours du mois">'+pages.join("")+'</div><div class="scroll"><table class="grid'+(full?" full-grid":"")+'"><thead><tr><th scope="col">IDE</th>'+headings+'</tr></thead><tbody>'+rows+openRow+'</tbody></table></div><div class="legend"><span><b class="J"></b>J · SMUR jour</span><span><b class="N"></b>N · SMUR nuit</span><span><b class="T"></b>T · TIIH</span><span><b class="A"></b>A · Absence</span><span>— Repos</span><span>? Aucun poste ni repos saisi · disponibilité à vérifier</span><span>× Hors effectif</span><span>• Poste protégé</span></div>'+times;
   }
   function individualAgenda(s,person,all,roster) {
     const count={J:0,N:0,T:0};
@@ -3590,7 +3970,7 @@
     }).join("");
     dialog.innerHTML='<form data-form="edit-day" '+dataAtt("day",day)+'><h2 id="dialog-title">Modifier une journée</h2>'+
       '<label class="field">Date du planning<input type="date" id="edit-day-date" required min="'+first+'" max="'+last+'" value="'+day+'"></label>'+
-      fields+'<label><input type="checkbox" name="lock-changes"> Verrouiller les cases modifiées pour les prochains calculs</label>'+
+      fields+'<div class="actions">'+["J","N","T"].filter(r=>r!=="T"||D.tiihRequired(state,day)).map(r=>btn("duty-options","IDE possibles · "+D.SHIFT_LABELS[r],"mini",dataAtt("day",day)+' '+dataAtt("role",r))).join("")+'</div><label><input type="checkbox" name="lock-changes"> Verrouiller les cases modifiées pour les prochains calculs</label>'+
       '<div class="day-preview" aria-live="polite"></div><p class="issueerror" role="alert"></p>'+
       '<div class="actions">'+btn("close","Annuler")+submit("Enregistrer cette journée")+'</div></form>';
     if(!dialog.open) dialog.showModal();
@@ -3609,33 +3989,135 @@
     const submitButton=form.querySelector('[type=submit]'), date=form.querySelector("#edit-day-date");
     box.replaceChildren(); alert.textContent="";
     try {
-      const {candidate,changes}=dayEdits(form);
+      const {candidate,changes,phaseChanges}=dayEdits(form);
       submitButton.disabled=!changes.length;
       date.disabled=Boolean(changes.length);
       if(!changes.length) return;
       const conflicts=D.validateSchedule(candidate,day,day).filter(i=>i.severity==="error");
       box.innerHTML='<p><strong>'+esc(shortDay(day))+'</strong></p><ul>'+changes.map(c=>'<li>'+esc(c.name)+' · '+
         esc(D.SHIFT_LABELS[c.before])+' → '+esc(D.SHIFT_LABELS[c.after])+'</li>').join("")+'</ul>'+
-        (conflicts.length?'<details open><summary>'+conflicts.length+' point(s) à corriger dans le brouillon</summary><ul>'+
+        phaseChangeNote(phaseChanges)+(conflicts.length?'<details open><summary>'+conflicts.length+' point(s) à corriger dans le brouillon</summary><ul>'+
           conflicts.map(i=>'<li>'+esc(i.message)+'</li>').join("")+'</ul></details>':"");
     } catch(error) {submitButton.disabled=true;date.disabled=true;alert.textContent=error.message;}
   }
-  function showEditor(id,day) {
+  function phaseChangeNote(changes) {
+    if(!changes?.length) return "";
+    return '<p class="hint">Repères jour/nuit ajustés pour cette modification · '+changes.map(c=>
+      esc(nameOf(c.nurse_id))+' du '+esc(shortDay(c.start))+' au '+esc(shortDay(c.end))).join(" · ")+'.</p>';
+  }
+  function showEditor(id,day,selected=null) {
     if(!state.nurses.some(n=>n.id===id && D.isActive(n,day))) throw Error("Cette IDE est hors effectif à cette date.");
-    const {a}=cellInfo(state,id,day);
+    const {a,unknown}=cellInfo(state,id,day);
     const absent=D.absenceOn(state,id,day);
-    dialog.innerHTML='<form data-form="cell" '+dataAtt("nurse",id)+' '+dataAtt("day",day)+'><p class="caps">'+esc(shortDay(day))+'</p><h2 id="dialog-title">'+esc(nameOf(id))+'</h2><div class="fields"><label>Poste<select name="shift">'+["-","J","N","T"].map(c=>opt(c,D.SHIFT_LABELS[c]+(c==="T"?" · "+shiftHours(state,day,c):""),c===(a?.shift||"-"))).join("")+'</select></label></div>'+(absent?'<p class="hint">Une absence est enregistrée à cette date.</p>':"")+'<p><label><input type="checkbox" name="locked" '+(a?.locked?"checked":"")+'> Verrouiller le poste ou le repos</label></p><p><label><input type="checkbox" name="confirmed" '+(a?.confirmed?"checked":"")+'> Confirmer le poste réalisé</label></p><p role="alert" class="issueerror"></p><div class="actions">'+btn("close","Annuler")+submit("Enregistrer")+'</div></form>';
-    dialog.showModal();
+    dialog.innerHTML='<form data-form="cell" '+dataAtt("nurse",id)+' '+dataAtt("day",day)+'><p class="caps">'+esc(shortDay(day))+'</p><h2 id="dialog-title">'+esc(nameOf(id))+'</h2>'+
+      (unknown?'<p>La case « ? » signifie qu’aucun poste ni repos n’a été saisi pour cette IDE. Le choix d’un poste permet de vérifier sa disponibilité.</p>':'')+
+      '<div class="fields"><label>Poste<select name="shift">'+["-","J","N","T"].map(c=>opt(c,D.SHIFT_LABELS[c]+(c==="T"?" · "+shiftHours(state,day,c):""),c===(selected||a?.shift||"-"))).join("")+'</select></label></div>'+
+      (absent?'<p class="hint">Une absence est enregistrée à cette date.</p>':"")+
+      '<p><label><input type="checkbox" name="locked" '+(a?.locked?"checked":"")+'> Verrouiller le poste ou le repos</label></p>'+
+      '<p><label><input type="checkbox" name="confirmed" '+(a?.confirmed?"checked":"")+'> Confirmer le poste réalisé</label></p>'+
+      '<div data-cell-preview aria-live="polite"></div><p role="alert" class="issueerror"></p><div data-cell-options></div>'+
+      '<div class="actions">'+btn("close","Annuler")+submit("Enregistrer")+'</div></form>';
+    if(!dialog.open) dialog.showModal();
+    refreshCellChecks(dialog.querySelector("form"));
+  }
+  function cellEdits(form) {
+    return globalThis.PlannerDayEditor.cell(state,form.dataset.day,form.dataset.nurse,form.elements.shift.value,
+      {locked:form.elements.locked.checked,confirmed:form.elements.confirmed.checked});
+  }
+  function rotationSettingsLink() {
+    const anchor=state.settings.night_rotation_from;
+    return btn("check-rotation-start",anchor?"Vérifier le début du roulement · "+shortDay(anchor):"Vérifier le début du roulement");
   }
   function refreshCellChecks(form) {
-    const {day,nurse:id}=form.dataset, row=state.assignments[day]||{};
-    const shift=form.elements.shift.value;
-    const alert=form.querySelector('[role=alert]'), saveButton=form.querySelector('[type=submit]');
-    alert.textContent=""; saveButton.disabled=false;
-    if((row[id]?.shift||"-")===shift) return;
-    const candidate={...state,assignments:{...state.assignments,[day]:{...row,[id]:{...row[id],shift}}}};
-    try {globalThis.PlannerDayEditor.checkScheduleChange(state,candidate,day);}
-    catch(error) {alert.textContent=error.message;saveButton.disabled=true;}
+    const {day,nurse:id}=form.dataset,shift=form.elements.shift.value;
+    const alert=form.querySelector('[role=alert]'),button=form.querySelector('[type=submit]'),preview=form.querySelector('[data-cell-preview]');
+    const opts=form.querySelector('[data-cell-options]');
+    alert.textContent="";preview.replaceChildren();button.disabled=false;button.textContent="Enregistrer";
+    opts.innerHTML=shift!=="-"?btn("duty-options","Voir les IDE possibles pour "+D.SHIFT_LABELS[shift],"mini",dataAtt("day",day)+' '+dataAtt("role",shift)):"";
+    try {
+      const result=cellEdits(form);
+      const {changes,phaseChanges}=result;
+      const gap=donorGap(state,result,day);
+      const previous=changes.filter(c=>c.id!==id);
+      if(changes.length) preview.innerHTML='<ul>'+changes.map(c=>'<li>'+esc(c.name)+' · '+esc(D.SHIFT_LABELS[c.before])+' → '+esc(D.SHIFT_LABELS[c.after])+'</li>').join("")+'</ul>'+phaseChangeNote(phaseChanges);
+      if(gap) preview.innerHTML+='<p class="hint">Ce remplacement laisserait '+esc(nameOf(gap.nurse_id))+' sans garde du '+esc(shortDay(gap.start))+' au '+esc(shortDay(gap.end))+'.</p>';
+      if(previous.length) button.textContent="Réattribuer "+D.SHIFT_LABELS[shift]+" à "+nameOf(id);
+    } catch(error) {
+      alert.textContent=error.message;button.disabled=true;
+      if(/quinzaine|rôle|roulement|trame/.test(error.message)) opts.innerHTML+=' '+rotationSettingsLink();
+      const gap=D.workGaps(state,day,day).find(g=>g.nurse_id===id);
+      if(gap) {
+        const [first,last]=range(),from=gap.start<first?first:gap.start,until=gap.end>last?last:gap.end;
+        opts.innerHTML+=' '+btn("gap-options","Chercher un autre poste pour "+nameOf(id),"mini",dataAtt("nurse",id)+' '+dataAtt("from",from)+' '+dataAtt("until",until));
+      }
+    }
+  }
+  function workGapView(gaps,start,end) {
+    if(!gaps.length) return "";
+    const [monthFirst,monthLast]=range();
+    return '<section class="panel gap-report" aria-labelledby="gap-title"><h2 id="gap-title">Périodes sans garde inscrite</h2><p class="subtle">Au moins sept dates consécutives. Les absences et les repos protégés sont pris en compte.</p>'+
+      '<div class="scroll"><table><thead><tr><th scope="col">IDE</th><th scope="col">Période</th><th scope="col">Planning</th><th scope="col">Action</th></tr></thead><tbody>'+
+      gaps.map(g=>{
+        const from=[g.start,start,monthFirst].sort().at(-1),until=[g.end,end,monthLast].sort()[0];
+        const note=g.nightRestDays===g.days?"Repos prévus par le roulement de nuit":g.unknownDays?g.unknownDays+" case(s) « ? »":"Repos renseignés";
+        const action=from<=until?btn("gap-options","Chercher un poste","mini",dataAtt("nurse",g.nurse_id)+' '+dataAtt("from",from)+' '+dataAtt("until",until)):"";
+        return '<tr><th scope="row">'+esc(nameOf(g.nurse_id))+'</th><td>Du '+esc(shortDay(g.start))+' au '+esc(shortDay(g.end))+' · '+g.days+' jours</td><td>'+esc(note)+'</td><td>'+action+'</td></tr>';
+      }).join("")+'</tbody></table></div></section>';
+  }
+  function donorGap(state,result,day) {
+    const donors=result.changes.filter(c=>c.after==="-"&&c.before!=="-").map(c=>c.id);
+    if(!donors.length) return null;
+    const known=D.workGaps(state,day,day);
+    return D.workGaps(result.candidate,day,day).find(g=>donors.includes(g.nurse_id) &&
+      !known.some(k=>k.nurse_id===g.nurse_id&&k.start<=g.start&&k.end>=g.end));
+  }
+  async function showGapOptions(id,from,until) {
+    const s=proposal?.candidate||state,offer=proposal,available=[],reasons=new Set();
+    const first=shortDay(from),last=shortDay(until);
+    dialog.innerHTML='<h2 id="dialog-title">Postes possibles pour '+esc(nameOf(id))+'</h2><p>Du '+esc(first)+' au '+esc(last)+'</p><div data-gap-results role="status">Vérification des postes au planning…</div><div class="actions">'+btn("close","Fermer")+'</div>';
+    if(!dialog.open) dialog.showModal();
+    const box=dialog.querySelector("[data-gap-results]");
+    for(const day of D.dates(from,until)) {
+      await new Promise(resolve=>setTimeout(resolve,0));
+      if(!box.isConnected || !dialog.open || s!==(proposal?.candidate||state)) return;
+      for(const shift of ["J","T","N"]) {
+        if(shift==="T"&&!D.tiihRequired(s,day)) continue;
+        try {
+          const change=globalThis.PlannerDayEditor.cell(s,day,id,shift);
+          const missing=donorGap(s,change,day);
+          if(missing) {reasons.add("Ce remplacement prolongerait une période sans garde pour "+nameOf(missing.nurse_id)+".");continue;}
+          const names=change.changes.filter(c=>c.id!==id).map(c=>c.name);
+          available.push({day,shift,names});
+        } catch(error) {reasons.add(error.message);}
+      }
+    }
+    const group=(items,title)=>items.length?'<h3>'+title+'</h3><ul>'+items.map(x=>{
+      const label=shortDay(x.day)+' · '+D.SHIFT_LABELS[x.shift]+(x.names.length?' · à reprendre à '+x.names.join(", "):'');
+      return '<li>'+(offer?esc(label):btn("prepare-duty",label,"mini",dataAtt("id",id)+' '+dataAtt("day",x.day)+' '+dataAtt("role",x.shift)))+'</li>';
+    }).join("")+'</ul>':"";
+    box.innerHTML=group(available.filter(x=>!x.names.length),"Postes à pourvoir")+group(available.filter(x=>x.names.length),"Réaffectations possibles")+
+      (!available.length?'<p>Aucune affectation individuelle compatible trouvée sur ces dates.</p>':'')+
+      (offer&&available.length?'<p>Pour modifier une affectation de cet aperçu, conservez la proposition.</p>':'')+
+      (reasons.size?'<details><summary>Voir les empêchements rencontrés</summary><ul>'+[...reasons].map(r=>'<li>'+esc(r)+'</li>').join("")+'</ul></details>':'')+
+      ([...reasons].some(r=>/quinzaine|rôle|trame|roulement/.test(r))?rotationSettingsLink():'');
+  }
+  function showDutyOptions(day,shift) {
+    const s=proposal?.candidate||state,row=s.assignments[day]||{},available=[],blocked=[],owners=globalThis.PlannerDayEditor.owners(row,shift);
+    for(const nurse of s.nurses) {
+      if(owners.includes(nurse.id)||!D.isActive(nurse,day)) continue;
+      if(shiftFamily(row[nurse.id]?.shift)) {blocked.push(nurse.name+' · déjà en '+D.SHIFT_LABELS[row[nurse.id].shift]+'.');continue;}
+      try {
+        globalThis.PlannerDayEditor.cell(s,day,nurse.id,shift);
+        available.push(nurse);
+      } catch(error) {blocked.push(nurse.name+' · '+error.message);}
+    }
+    dialog.innerHTML='<h2 id="dialog-title">'+esc(D.SHIFT_LABELS[shift])+' du '+esc(shortDay(day))+'</h2><p>'+
+      (owners.length?'Déjà attribué à '+esc(owners.map(id=>s.nurses.find(n=>n.id===id)?.name||id).join(", "))+'.':'Poste à pourvoir.')+
+      (proposal?' Les choix concernent l’aperçu. Conservez-le pour modifier une affectation.':'')+'</p>'+
+      '<h3>IDE pouvant prendre ce poste</h3>'+(available.length?'<ul>'+available.map(n=>'<li>'+(proposal?esc(n.name):btn("prepare-duty",n.name,"mini",dataAtt("id",n.id)+' '+dataAtt("day",day)+' '+dataAtt("role",shift)))+'</li>').join("")+'</ul>':'<p>Aucune autre IDE disponible pour cette affectation individuelle.</p>')+
+      (blocked.length?'<details><summary>Voir les empêchements ('+blocked.length+')</summary><ul>'+blocked.map(t=>'<li>'+esc(t)+'</li>').join("")+'</ul></details>':'')+
+      '<div class="actions">'+btn("close","Fermer")+'</div>';
+    if(!dialog.open)dialog.showModal();
   }
   function absenceView() {
     const old=state.absences.find(a=>a.id===absenceId);
@@ -3825,7 +4307,7 @@
       <h3 id="night-rules" tabindex="-1">Roulement de nuit</h3>
       ${reliefSelector(D.nightRotationMode(state))}
       <p class="hint">Ce réglage s’applique aux nouvelles quinzaines. Pour essayer un autre roulement sur un planning déjà saisi, utilisez « Compléter le planning existant ».</p>
-      <p>Les IDE A et B sont en repos les jours où aucune nuit ne leur est attribuée pendant la quinzaine. La relève C assure les trois nuits indiquées et peut prendre un poste de jour ou un TIIH hors de sa période de nuit, sous réserve des repos et des plafonds.</p>
+      <p>L’IDE A reste en repos entre ses nuits. En mode avec relève, l’IDE B peut reprendre le jour en deuxième semaine après la fin de sa période de nuit et 48 h de repos. Pendant la première semaine, elle se repose entre ses nuits. La relève C assure les trois nuits indiquées et peut prendre un poste de jour ou un TIIH hors de sa période de nuit, sous réserve des repos et des plafonds.</p>
       <div class="scroll" data-relief-pattern>${reliefRuleTable(D.nightRotationMode(state))}</div>
       <p data-relief-hint>${reliefDescription(D.nightRotationMode(state))}</p>
       <label class="field">Premier lundi du roulement de nuit<input type="date" name="night_rotation_from" min="1900-01-01" step="7" ${state.settings.night_rotation_from?"required":""} value="${esc(state.settings.night_rotation_from||"")}"></label>
@@ -3975,7 +4457,8 @@
       const [start,end]=range(), from=form.elements.from.value, until=form.elements.until.value||end;
       if(!from || from<start || from>until || until>end) throw Error("Choisissez un intervalle compris dans le mois affiché.");
       dialog.close();
-      return generateProposal(from,until,form.elements.mode.value==="replan",form.elements.night_relief.disabled?null:form.elements.night_relief.value||null);
+      return generateProposal(from,until,form.elements.mode.value==="replan",form.elements.night_relief.disabled?null:form.elements.night_relief.value||null,
+        form.elements.restart_rotation.checked?E.nightRotationRestart(state,from,until)?.date:null,form.elements.prioritize_continuity.checked);
     }
     if(form.dataset.form==="edit-day") {
       const {candidate,changes}=dayEdits(form);
@@ -3991,17 +4474,8 @@
     const candidate=clone(state);
     switch(form.dataset.form) {
       case "cell": {
-        const {nurse:id,day}=form.dataset;
-        if(!candidate.nurses.some(n=>n.id===id && D.isActive(n,day))) throw Error("Cette IDE est hors effectif à cette date.");
-        const prev=candidate.assignments[day]?.[id];
-        const shift=get("shift"), confirmed=f.has("confirmed"), locked=f.has("locked");
-        if((prev?.confirmed||prev?.locked)&&prev.shift!==shift) throw Error("Retirez la protection et enregistrez avant de modifier ce poste.");
-        if(confirmed&&(shift==="-"||D.shiftInterval(day,shift,"elapsed",candidate)[1]>Date.now()/60000)) throw Error("Seul un poste terminé peut être confirmé.");
-        if(!candidate.assignments[day]) candidate.assignments[day]={};
-        candidate.assignments[day][id]={shift,locked,confirmed};
-        candidate.reviewed[day]=[...new Set([...(candidate.reviewed[day]||[]),id])];
-        globalThis.PlannerDayEditor.checkScheduleChange(state,candidate,day);
-        save(candidate,"Modification du brouillon enregistrée."); dialog.close(); break;
+        const change=cellEdits(form);
+        save(change.candidate,"Modification du planning enregistrée."); dialog.close(); break;
       }
       case "team": {
         const effective=get("effective");
@@ -4100,7 +4574,7 @@
       }
     }
   }
-  async function generateProposal(resumeFrom=null,resumeUntil=null,replanUnlocked=false,nightRelief=null) {
+  async function generateProposal(resumeFrom=null,resumeUntil=null,replanUnlocked=false,nightRelief=null,restartNightRotation=null,prioritizeContinuity=false) {
     if(busy) return;
     const original=state, oldProposal=proposal, target=period, forecast=includeLookahead;
     const all=resumeFrom?D.dates(resumeFrom,resumeUntil):days();
@@ -4109,7 +4583,7 @@
       return date?[n.name+" le "+shortDay(date)]:[];
     });
     if(missing.length) {
-      generationFailure={resumeFrom,resumeUntil,replanUnlocked,nightRelief,quota:true,message:"Quotité manquante pour "+missing.join(", ")+". Renseignez les quotités aux dates indiquées dans Équipe et règles."};
+      generationFailure={resumeFrom,resumeUntil,replanUnlocked,nightRelief,restartNightRotation,prioritizeContinuity,quota:true,message:"Quotité manquante pour "+missing.join(", ")+". Renseignez les quotités aux dates indiquées dans Équipe et règles."};
       notify();render();return;
     }
     busy=true; render();
@@ -4119,6 +4593,8 @@
       if(state!==original || period!==target || proposal!==oldProposal) return;
       const options={timeLimitMs:resumeFrom?3500:2500,includeLookahead:!resumeFrom && forecast};
       if(nightRelief) options.nightRelief=nightRelief;
+      if(restartNightRotation) options.restartNightRotation=restartNightRotation;
+      if(prioritizeContinuity) options.prioritizeContinuity=true;
       if(resumeFrom) {
         options.resumeFrom=resumeFrom;
         options.resumeUntil=resumeUntil;
@@ -4130,18 +4606,18 @@
       }
       const result=E.generate(original,year(),month(),options);
       if(result.candidate) {
-        proposal={...result,resumeFrom,resumeUntil,replanUnlocked,nightRelief,afterPreview:Boolean(oldProposal)}; generationFailure=null; week=-1;
+        proposal={...result,resumeFrom,resumeUntil,replanUnlocked,nightRelief,restartNightRotation,prioritizeContinuity,afterPreview:Boolean(oldProposal)}; generationFailure=null; week=-1;
         notify();
       } else {
         const noAddition=result.added===0 && Boolean(result.start && result.end) && ["unknown","infeasible"].includes(result.status);
         if(noAddition) proposal=null;
         const known=!noAddition && !resumeFrom && !result.conflictDate && D.validateSchedule(original,...range(),false).find(i=>i.severity==="error" && i.day && i.nurse_id);
-        generationFailure={resumeFrom,resumeUntil,replanUnlocked,nightRelief,noAddition,start:result.start,end:result.end,message:result.message,status:result.status,conflictDate:result.conflictDate,conflictCode:result.conflictCode,
+        generationFailure={resumeFrom,resumeUntil,replanUnlocked,nightRelief,restartNightRotation,prioritizeContinuity,noAddition,start:result.start,end:result.end,message:result.message,status:result.status,conflictDate:result.conflictDate,conflictCode:result.conflictCode,
           detail:known && !result.conflictDate?"Point à vérifier dans le planning enregistré. "+known.message:""};
         notify();
       }
     } catch(error) {
-      generationFailure={resumeFrom,resumeUntil,replanUnlocked,nightRelief,message:error.message || String(error)};notify();
+      generationFailure={resumeFrom,resumeUntil,replanUnlocked,nightRelief,restartNightRotation,prioritizeContinuity,message:error.message || String(error)};notify();
     } finally {busy=false; render();}
   }
   async function act(button) {
@@ -4200,6 +4676,11 @@
         }
         break;
       case "discard": proposal=null; generationFailure=null; notify("Proposition écartée."); render(); break;
+      case "gap-options": await showGapOptions(button.dataset.nurse,button.dataset.from,button.dataset.until);break;
+      case "duty-options": showDutyOptions(button.dataset.day,button.dataset.role);break;
+      case "prepare-duty": showEditor(button.dataset.id,button.dataset.day,button.dataset.role);break;
+      case "check-rotation-start":
+        dialog.close();page="team";render();main.querySelector('[name=night_rotation_from]')?.focus();break;
       case "cell": showEditor(button.dataset.nurse,button.dataset.day); break;
       case "edit-day":
         showDayEditor(button.dataset.day||defaultDay());
@@ -4308,14 +4789,14 @@
   document.addEventListener("change",e=>{
     try {
       const t=e.target;
-      if(t.form?.dataset.form==="resume" && t.name==="night_relief") updateResumeSummary(t.form);
+      if(t.form?.dataset.form==="resume" && ["night_relief","restart_rotation"].includes(t.name)) updateResumeSummary(t.form);
       if(t.form?.dataset.form==="rules" && t.name==="night_relief") updateReliefRules(t.form);
       if(t.form?.dataset.form==="resume" && t.name==="mode") {
         if(!t.form.dataset.customFrom) t.form.elements.from.value=t.value==="replan"?t.form.dataset.replanFrom:t.form.dataset.keepFrom;
         updateResumeSummary(t.form);
       }
       if(t.form?.dataset.form==="clear-month") syncClearPreview(t.form);
-      if(t.form?.dataset.form==="cell" && t.name==="shift") refreshCellChecks(t.form);
+      if(t.form?.dataset.form==="cell" && ["shift","locked","confirmed"].includes(t.name)) refreshCellChecks(t.form);
       if(t.form && !dialog.contains(t)) formEdited=true;
       if(t.form?.dataset.form==="absence" && ["from","nurse"].includes(t.name)) {
         const form=t.form;
