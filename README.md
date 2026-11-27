@@ -29,23 +29,25 @@ L’onglet **Planning** du classeur présente une vue du planning enregistré. P
 - L’équipe démarre avec sept IDE à **100 %**. Dans **Équipe et règles**, vous pouvez adapter l’effectif, les quotités et l’objectif annuel de temps de travail. Pour mettre à jour une équipe existante, cliquez sur **Mettre toute l’équipe à 100 %**, puis sur **Enregistrer l’équipe**. L’OAT 2026 est de **1 560 h par ETP**, du 1ᵉʳ janvier au 31 décembre.
 - Le SMUR fonctionne chaque jour avec une IDE de **8 h à 20 h** et une IDE de **20 h à 8 h le lendemain**. Le TIIH fonctionne **le mardi, le jeudi et le vendredi**, hors jours fériés. Il commence à **9 h** et dure normalement **7 h 42**, soit une fin à **16 h 42**.
 - Le générateur compte le travail effectif sur **168 heures glissantes**, y compris aux changements de mois ou d’année. Dès que la fenêtre comprend un SMUR J ou un TIIH, le total de tous les postes, nuits comprises, est limité à **48 h**. Si elle ne contient que des SMUR N, un dépassement de 48 h déclenche un avertissement et la proposition peut être conservée. Le repos minimum entre deux postes est de **12 h** selon les horaires affichés.
-- Après **trois dates consécutives de prise de poste**, les **deux jours suivants** sont des repos. La trame ci-dessous prévoit une exception pour la reprise du mardi soir par l’IDE A après les trois nuits du premier week-end. Le générateur cherche aussi à éviter les journées et les nuits travaillées isolément.
+- Après **trois dates consécutives de prise de poste**, les **deux jours suivants** sont des repos. Seul le roulement à deux IDE prévoit une reprise le mardi soir pour l’IDE B après les trois nuits du premier week-end. Le générateur cherche aussi à éviter les journées et les nuits travaillées isolément.
 - Le week-end de jour réunit **samedi et dimanche** et le générateur cherche à inclure le vendredi. Une IDE qui travaille le week-end bénéficie d’un repos de jour le lundi suivant.
 - Une même IDE ne peut pas travailler **deux week-ends complets consécutifs**. Un week-end est complet si elle prend un poste le vendredi, le samedi **et** le dimanche. SMUR J, SMUR N et TIIH comptent, même si le poste change d’un jour à l’autre. Un samedi et un dimanche travaillés sans le vendredi ne forment pas un bloc complet. La règle suit le calendrier à travers les mois et les années. Par exemple, une IDE qui travaille les 25, 26 et 27 décembre 2026 ne peut pas aussi travailler les trois jours du 1ᵉʳ au 3 janvier 2027.
 - Une absence est créditée de **7 h 42** par jour du lundi au vendredi. Un créneau individuel peut avoir une durée différente.
 
 ### Répartir les nuits SMUR
 
-Deux IDE se partagent les nuits prévues sur une quinzaine. La date d’une garde est celle de sa prise de poste à 20 h. Dans le tableau, A et B désignent les deux titulaires de cette quinzaine.
+Le roulement par défaut, **Trois IDE avec relève**, répartit les quatorze nuits entre deux titulaires (IDE A et B) et une relève (IDE C). Chaque garde commence à 20 h à la date indiquée.
 
 | Semaine de la trame | Lundi | Mardi | Mercredi | Jeudi | Vendredi | Samedi | Dimanche |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| Première semaine | A | B | B | B | A | A | A |
-| Deuxième semaine | B | A | A | A | B | B | B |
+| Première semaine | B | A | A | A | B | B | B |
+| Deuxième semaine | A | C | C | C | A | A | A |
 
-Chacune reste dans son rôle pendant les quatorze jours. Les dates de la quinzaine où elle ne travaille pas de nuit sont des repos. Dans **Équipe et règles**, le champ **Premier lundi de la trame à deux IDE** fixe le début de la première semaine. Si des gardes sont déjà saisies, confirmez la modification après avoir vérifié sa date. Sur une équipe neuve sans date enregistrée, le lundi 4 janvier 2027 sert de repère pour calculer les quinzaines qui précèdent et qui suivent.
+**A assure 7 nuits, B en assure 4 et C en assure 3.** A et B sont en repos les autres dates de la quinzaine. La relève C peut travailler en SMUR J ou en TIIH avant ou après sa propre période de nuit si les repos et le plafond horaire le permettent. À la quinzaine suivante, le calcul fait tourner les rôles en tenant compte des disponibilités et des nuits déjà effectuées.
 
-Après ses trois nuits du vendredi au dimanche de la première semaine, A garde le lundi en repos et peut reprendre le mardi à 20 h. Pendant une semaine ordinaire, ces trois nuits puis les trois nuits du mardi au jeudi portent le total à **72 h sur 168 h**. Le relevé **Heures de nuit sur 168 h** présente les dates et le pic du dépassement. Si une absence ou une autre règle empêche la titulaire prévue d’assurer une nuit, cette garde reste **à pourvoir** dans le brouillon.
+Dans **Équipe et règles → Roulement de nuit**, le champ **Premier lundi du roulement de nuit** fixe le début de la première semaine. En présence de gardes déjà saisies, vérifiez la date et confirmez le changement. Il peut décaler les quinzaines et réinitialiser leurs choix de relève. Sur une équipe neuve sans date enregistrée, le lundi 4 janvier 2027 sert de repère pour calculer les quinzaines qui précèdent et qui suivent.
+
+Si la relève manque, les nuits concernées restent **à pourvoir**. Le bouton **Essayer avec deux IDE** permet de comparer une proposition. En mode **Deux IDE sans relève**, B reprend les nuits du mardi au jeudi de la deuxième semaine. Les onze autres nuits du tableau gardent le même rôle. Après ses trois nuits du vendredi au dimanche de la première semaine, B se repose le lundi et peut reprendre le mardi à 20 h. Ses six nuits représentent habituellement **72 h sur 168 h**. Le relevé **Heures de nuit sur 168 h** affiche les dates et le pic du dépassement.
 
 Dans la fonction publique hospitalière française, l’article 6 du décret n° 2002-9 fixe en principe une limite de **48 h de travail effectif sur sept jours**, nuits comprises. Faites vérifier par votre établissement toute proposition en dépassement. [Article 6 sur Légifrance](https://www.legifrance.gouv.fr/loda/article_lc/LEGIARTI000051691541).
 
@@ -53,7 +55,7 @@ Une période de nuit dure **14 à 21 jours calendaires**, repos compris. Après 
 
 Pour équilibrer les nuits entre IDE, le générateur compte les **gardes SMUR N** déjà assurées dans l’historique et celles qu’il prépare. Chaque garde de 20 h à 8 h compte pour une nuit. Deux IDE qui ont assuré quatre nuits ont ainsi le même total de nuits, même si leur nombre de gardes de jour ou la durée de leurs périodes diffère. Les compteurs annuels permettent aussi de suivre les heures travaillées et l’OAT.
 
-Dans une proposition, ouvrez **Voir le roulement de nuit** pour consulter les deux titulaires de chaque quinzaine et le nombre de nuits attribuées à chacune. En cas de blocage, **Consulter les règles de nuit** ouvre **Équipe et règles → Roulement de nuit**.
+Dans une proposition, ouvrez **Voir le roulement de nuit** pour consulter le rôle et le nombre de nuits de chaque IDE. Pour essayer un autre mode sur une période déjà planifiée, ouvrez **Compléter le planning existant** et choisissez le **Roulement pour les quinzaines de cette proposition**. Le choix est enregistré pour les quinzaines indiquées lorsque vous conservez la proposition.
 
 ## Gérer une arrivée, un départ ou une quotité temporaire
 
