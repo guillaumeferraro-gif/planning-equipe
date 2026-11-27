@@ -38,7 +38,7 @@ L’onglet **Planning** du classeur présente une vue du planning enregistré. P
 
 Trois IDE distinctes assurent les sept nuits de chaque semaine civile. Une IDE prend les nuits de **lundi et mardi**, une deuxième celles de **mercredi et jeudi**, et une troisième celles de **vendredi, samedi et dimanche**. La date retenue est celle de la prise de poste à 20 h. Chaque série est attribuée en entier à une seule IDE.
 
-Sur **deux semaines civiles consécutives**, exactement **quatre IDE différentes** assurent les nuits. Par exemple, A, B et C peuvent assurer les trois séries de la première semaine, puis D, A et B celles de la suivante. La rotation est libre. Le calcul tient compte des affectations connues avant et après le mois, y compris au changement d’année. Si les disponibilités ou les gardes déjà fixées empêchent cette répartition, l’application signale le blocage et conserve le planning enregistré. Elle exige toujours trois titulaires dans la semaine et garde chaque série entière.
+Sur **deux semaines civiles consécutives**, exactement **quatre IDE différentes** assurent les nuits. Par exemple, A, B et C peuvent assurer les trois séries de la première semaine, puis D, A et B celles de la suivante. La rotation est libre. Le calcul tient compte des affectations connues avant et après le mois, y compris au changement d’année. Une semaine entièrement couverte comporte trois titulaires et chaque série entière revient à une IDE. Les indisponibilités ou les gardes déjà fixées peuvent laisser des nuits à pourvoir dans un brouillon partiel.
 
 Une période de nuit dure **14 à 21 jours calendaires**, repos compris. Après la dernière nuit de cette période, il faut **48 heures de repos** avant de reprendre un poste. Par exemple, si la dernière nuit démarre dimanche à 20 h et finit lundi à 8 h, la première reprise possible est mercredi à 8 h, sous réserve des autres règles. Les périodes de jour ont une durée libre. Une IDE peut par exemple rester 28 jours en période de jour, ou davantage.
 
@@ -77,7 +77,15 @@ Dans **Planning**, choisissez le mois puis **Compléter le planning existant**. 
 
 Cliquez sur **Préparer la proposition**. Le calcul attribue les postes vacants de l’intervalle. Il conserve les gardes déjà saisies, même sans verrou, les repos verrouillés ou confirmés et toutes les dates en dehors de l’intervalle. Les gardes de décembre comptent pour vérifier les heures et les repos de janvier, ainsi que pour équilibrer les nuits entre IDE.
 
-La fenêtre indique à partir de quel lundi s’applique le roulement de nuit par blocs. Lors de la première reprise, il s’agit du premier lundi à partir de la date choisie. Examinez le résultat puis cliquez sur **Conserver la proposition** pour l’enregistrer.
+La fenêtre indique à partir de quel lundi s’applique le roulement de nuit par blocs. Lors de la première reprise, il s’agit du premier lundi à partir de la date choisie. Examinez le résultat puis cliquez sur **Conserver la proposition** pour enregistrer une proposition complète.
+
+### Traiter un planning incomplet
+
+Si le calcul ne trouve pas de solution complète, une **Proposition partielle** permet d’avancer avec les gardes compatibles. Le calcul donne la priorité aux postes obligatoires **SMUR J** et **SMUR N**, puis aux **TIIH** ouverts. Un SMUR encore vacant reste un poste à couvrir.
+
+Consultez **Postes à pourvoir** pour repérer les dates et les horaires sans titulaire. **Conflits à examiner** indique les gardes déjà saisies qui demandent une vérification, par exemple si deux affectations empêchent un repos suffisant. Lorsqu’un déficit d’effectif peut être établi, **Effectif disponible par semaine** explique la limite de couverture pour les nuits ou les SMUR de jour.
+
+Pour reprendre le travail plus tard ou le partager avec l’équipe, cliquez sur **Conserver le brouillon**. Depuis le planning enregistré, ouvrez la journée concernée avec **Modifier**. La liste se met à jour après la correction. Dans l’onglet **Planning** du classeur, les postes vacants d’un mois entamé portent la mention **À pourvoir**. Le PDF d’équipe indique les postes vacants sous les dates correspondantes et détaille les conflits à examiner. Le CSV mensuel garde son format de réimportation.
 
 ## Refaire une proposition ou effacer un mois
 
