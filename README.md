@@ -6,7 +6,7 @@
 
 1. Ouvrez le planning, puis cliquez sur **Essayer avec une équipe fictive**.
 2. Choisissez un mois et cliquez sur **Générer une proposition**.
-3. Examinez les gardes et les alertes, puis cliquez sur **Conserver la proposition** si elle vous convient. Un clic sur une case permet de modifier une affectation.
+3. Examinez les gardes et les alertes, puis cliquez sur **Conserver la proposition** ou **Conserver le brouillon** selon le résultat. Un clic sur une case permet de modifier une affectation.
 
 Pour utiliser le planning hors ligne, [ouvrez le fichier HTML sur GitHub](./Planning-IDE.html), cliquez sur **Download raw file** (flèche vers le bas), puis double-cliquez sur le fichier téléchargé. Le navigateur conserve les données sur cet appareil. Exportez une sauvegarde JSON avant de changer de poste ou de navigateur, ou de déplacer le fichier HTML.
 
@@ -28,23 +28,32 @@ L’onglet **Planning** du classeur présente une vue du planning enregistré. P
 
 - L’équipe démarre avec sept IDE à **100 %**. Dans **Équipe et règles**, vous pouvez adapter l’effectif, les quotités et l’objectif annuel de temps de travail. Pour mettre à jour une équipe existante, cliquez sur **Mettre toute l’équipe à 100 %**, puis sur **Enregistrer l’équipe**. L’OAT 2026 est de **1 560 h par ETP**, du 1ᵉʳ janvier au 31 décembre.
 - Le SMUR fonctionne chaque jour avec une IDE de **8 h à 20 h** et une IDE de **20 h à 8 h le lendemain**. Le TIIH fonctionne **le mardi, le jeudi et le vendredi**, hors jours fériés. Il commence à **9 h** et dure normalement **7 h 42**, soit une fin à **16 h 42**.
-- Deux plafonds s’appliquent au travail effectif de chaque IDE. Le maximum est de **48 h sur sept jours glissants** et de **44 h par semaine du lundi au dimanche**. Le repos minimum entre deux postes est de **12 h** selon les horaires affichés.
-- Après **trois dates consécutives de prise de poste**, les **deux jours suivants** sont obligatoirement sans nouvelle prise de poste. Une série du vendredi au dimanche impose donc le repos le lundi et le mardi. Le repos peut durer plus longtemps. Le générateur cherche aussi à éviter les journées et les nuits travaillées isolément.
+- Le générateur compte le travail effectif sur **168 heures glissantes**, y compris aux changements de mois ou d’année. Dès que la fenêtre comprend un SMUR J ou un TIIH, le total de tous les postes, nuits comprises, est limité à **48 h**. Si elle ne contient que des SMUR N, un dépassement de 48 h déclenche un avertissement et la proposition peut être conservée. Le repos minimum entre deux postes est de **12 h** selon les horaires affichés.
+- Après **trois dates consécutives de prise de poste**, les **deux jours suivants** sont des repos. La trame ci-dessous prévoit une exception pour la reprise du mardi soir par l’IDE A après les trois nuits du premier week-end. Le générateur cherche aussi à éviter les journées et les nuits travaillées isolément.
 - Le week-end de jour réunit **samedi et dimanche** et le générateur cherche à inclure le vendredi. Une IDE qui travaille le week-end bénéficie d’un repos de jour le lundi suivant.
 - Une même IDE ne peut pas travailler **deux week-ends complets consécutifs**. Un week-end est complet si elle prend un poste le vendredi, le samedi **et** le dimanche. SMUR J, SMUR N et TIIH comptent, même si le poste change d’un jour à l’autre. Un samedi et un dimanche travaillés sans le vendredi ne forment pas un bloc complet. La règle suit le calendrier à travers les mois et les années. Par exemple, une IDE qui travaille les 25, 26 et 27 décembre 2026 ne peut pas aussi travailler les trois jours du 1ᵉʳ au 3 janvier 2027.
 - Une absence est créditée de **7 h 42** par jour du lundi au vendredi. Un créneau individuel peut avoir une durée différente.
 
 ### Répartir les nuits SMUR
 
-Trois IDE distinctes assurent les sept nuits de chaque semaine civile. Une IDE prend les nuits de **lundi et mardi**, une deuxième celles de **mercredi et jeudi**, et une troisième celles de **vendredi, samedi et dimanche**. La date retenue est celle de la prise de poste à 20 h. Chaque série est attribuée en entier à une seule IDE.
+Deux IDE se partagent les nuits prévues sur une quinzaine. La date d’une garde est celle de sa prise de poste à 20 h. Dans le tableau, A et B désignent les deux titulaires de cette quinzaine.
 
-Sur **deux semaines civiles consécutives**, exactement **quatre IDE différentes** assurent les nuits. Par exemple, A, B et C peuvent assurer les trois séries de la première semaine, puis D, A et B celles de la suivante. La rotation est libre. Le calcul tient compte des affectations connues avant et après le mois, y compris au changement d’année. Une semaine entièrement couverte comporte trois titulaires et chaque série entière revient à une IDE. Les indisponibilités ou les gardes déjà fixées peuvent laisser des nuits à pourvoir dans un brouillon partiel.
+| Semaine de la trame | Lundi | Mardi | Mercredi | Jeudi | Vendredi | Samedi | Dimanche |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Première semaine | A | B | B | B | A | A | A |
+| Deuxième semaine | B | A | A | A | B | B | B |
+
+Chacune reste dans son rôle pendant les quatorze jours. Les dates de la quinzaine où elle ne travaille pas de nuit sont des repos. Dans **Équipe et règles**, le champ **Premier lundi de la trame à deux IDE** fixe le début de la première semaine. Si des gardes sont déjà saisies, confirmez la modification après avoir vérifié sa date. Sur une équipe neuve sans date enregistrée, le lundi 4 janvier 2027 sert de repère pour calculer les quinzaines qui précèdent et qui suivent.
+
+Après ses trois nuits du vendredi au dimanche de la première semaine, A garde le lundi en repos et peut reprendre le mardi à 20 h. Pendant une semaine ordinaire, ces trois nuits puis les trois nuits du mardi au jeudi portent le total à **72 h sur 168 h**. Le relevé **Heures de nuit sur 168 h** présente les dates et le pic du dépassement. Si une absence ou une autre règle empêche la titulaire prévue d’assurer une nuit, cette garde reste **à pourvoir** dans le brouillon.
+
+Dans la fonction publique hospitalière française, l’article 6 du décret n° 2002-9 fixe en principe une limite de **48 h de travail effectif sur sept jours**, nuits comprises. Faites vérifier par votre établissement toute proposition en dépassement. [Article 6 sur Légifrance](https://www.legifrance.gouv.fr/loda/article_lc/LEGIARTI000051691541).
 
 Une période de nuit dure **14 à 21 jours calendaires**, repos compris. Après la dernière nuit de cette période, il faut **48 heures de repos** avant de reprendre un poste. Par exemple, si la dernière nuit démarre dimanche à 20 h et finit lundi à 8 h, la première reprise possible est mercredi à 8 h, sous réserve des autres règles. Les périodes de jour ont une durée libre. Une IDE peut par exemple rester 28 jours en période de jour, ou davantage.
 
 Pour équilibrer les nuits entre IDE, le générateur compte les **gardes SMUR N** déjà assurées dans l’historique et celles qu’il prépare. Chaque garde de 20 h à 8 h compte pour une nuit. Deux IDE qui ont assuré quatre nuits ont ainsi le même total de nuits, même si leur nombre de gardes de jour ou la durée de leurs périodes diffère. Les compteurs annuels permettent aussi de suivre les heures travaillées et l’OAT.
 
-Dans une proposition, ouvrez **Voir le roulement de nuit** pour retrouver les titulaires de chaque série et l’**IDE de relève**. En cas de blocage, **Consulter les règles de nuit** ouvre **Équipe et règles → Roulement de nuit**.
+Dans une proposition, ouvrez **Voir le roulement de nuit** pour consulter les deux titulaires de chaque quinzaine et le nombre de nuits attribuées à chacune. En cas de blocage, **Consulter les règles de nuit** ouvre **Équipe et règles → Roulement de nuit**.
 
 ## Gérer une arrivée, un départ ou une quotité temporaire
 
@@ -75,15 +84,17 @@ Dans **Planning**, cliquez sur **Modifier une journée** ou sur la date en tête
 
 Dans **Planning**, choisissez le mois puis **Compléter le planning existant**. Le **Premier jour à compléter** proposé est celui où il manque au moins un poste SMUR ou TIIH prévu. Une journée où seule la nuit est attribuée peut donc être complétée dès son poste de jour. Ajustez cette date si besoin. Par exemple, si le début du planning est déjà diffusé jusqu’au dimanche 3 janvier, choisissez le lundi 4 janvier pour poursuivre. Vous pouvez fixer un **Dernier jour à compléter** ou aller jusqu’à la fin du mois.
 
-Cliquez sur **Préparer la proposition**. Le calcul attribue les postes vacants de l’intervalle. Il conserve les gardes déjà saisies, même sans verrou, les repos verrouillés ou confirmés et toutes les dates en dehors de l’intervalle. Les gardes de décembre comptent pour vérifier les heures et les repos de janvier, ainsi que pour équilibrer les nuits entre IDE.
+Le mode **Conserver toutes les gardes saisies**, sélectionné par défaut, complète les postes vacants de l’intervalle. Pour appliquer la nouvelle trame à un mois déjà rempli, choisissez **Recalculer les gardes non protégées sur ces dates**, puis vérifiez le premier et le dernier jour. L’aperçu du recalcul indique combien d’affectations changent ou redeviennent vacantes. Les gardes et repos verrouillés ou confirmés sont protégés dans les deux modes.
 
-La fenêtre indique à partir de quel lundi s’applique le roulement de nuit par blocs. Lors de la première reprise, il s’agit du premier lundi à partir de la date choisie. Examinez le résultat puis cliquez sur **Conserver la proposition** pour enregistrer une proposition complète.
+Cliquez sur **Préparer la proposition** pour examiner le résultat. Les dates en dehors de l’intervalle sont conservées. Les gardes de décembre comptent pour vérifier les heures et les repos de janvier, ainsi que pour équilibrer les nuits entre IDE.
+
+Lors de la reprise d’un ancien planning, la fenêtre indique à partir de quel lundi s’applique la nouvelle trame. Si vous avez déjà renseigné le premier lundi dans **Équipe et règles**, la reprise utilise cette date. Sinon, elle propose le premier lundi à partir du jour choisi et mémorise cette date à l’acceptation. Les gardes antérieures restent dans l’historique. Examinez le résultat puis cliquez sur **Conserver la proposition** pour enregistrer une proposition complète.
 
 ### Traiter un planning incomplet
 
 Si le calcul ne trouve pas de solution complète, une **Proposition partielle** permet d’avancer avec les gardes compatibles. Le calcul donne la priorité aux postes obligatoires **SMUR J** et **SMUR N**, puis aux **TIIH** ouverts. Un SMUR encore vacant reste un poste à couvrir.
 
-Consultez **Postes à pourvoir** pour repérer les dates et les horaires sans titulaire. **Conflits à examiner** indique les gardes déjà saisies qui demandent une vérification, par exemple si deux affectations empêchent un repos suffisant. Lorsqu’un déficit d’effectif peut être établi, **Effectif disponible par semaine** explique la limite de couverture pour les nuits ou les SMUR de jour.
+Consultez **Postes à pourvoir** pour repérer les dates et les horaires sans titulaire. **Conflits à examiner** indique les gardes déjà saisies qui demandent une vérification, par exemple si deux affectations empêchent un repos suffisant. **Heures de nuit sur 168 h** affiche les dépassements liés uniquement aux nuits, même sur un planning entièrement pourvu. Dans la vue par IDE, le relevé porte sur la personne sélectionnée.
 
 Pour reprendre le travail plus tard ou le partager avec l’équipe, cliquez sur **Conserver le brouillon**. Depuis le planning enregistré, ouvrez la journée concernée avec **Modifier**. La liste se met à jour après la correction. Dans l’onglet **Planning** du classeur, les postes vacants d’un mois entamé portent la mention **À pourvoir**. Le PDF d’équipe indique les postes vacants sous les dates correspondantes et détaille les conflits à examiner. Le CSV mensuel garde son format de réimportation.
 
