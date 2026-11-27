@@ -1,8 +1,8 @@
 /** @OnlyCurrentDoc */
 /* Google Apps Script V8, lié au classeur. L’application publique est épinglée
    à une révision publiée. Les états et le journal restent dans ce classeur. */
-const PLANNING_COMMIT_ = 'ddb5ebd299d8a5faf63f80a8f4570da8453df8c0';
-const PLANNING_HTML_SHA256_ = '82c32de19226ea83e08bb3494ebea571c824d46d318041a2243d0d77155b82a1';
+const PLANNING_COMMIT_ = '247ad0b24ada09454feb7722a47c6bc63847df8e';
+const PLANNING_HTML_SHA256_ = '78f376af2cc9093be60978f9538e0ae28946956df37bef0b47cd5b11e99eec6a';
 const PLANNING_SHEET_ = '_Planning_IDE_donnees_v1';
 const PLANNING_MARK_ = 'PLANNING_IDE_STORAGE_V1';
 const PLANNING_MAX_ = 16 * 1024 * 1024; // unités UTF-16 du document JSON
@@ -302,6 +302,7 @@ function planningValidateState_(input) {
     return Array.from({length: Math.max(0, last - first + 1)}, (_, i) => isoDay(first + i));
   }
   function phaseBounds(settings,mode) {
+    if (mode==="J" && settings.rules_version===3) return {min:1,max:Infinity};
     if (mode==="N" || settings.rules_version!==2)
       return {min:settings.phase_min,target:settings.phase_target,max:settings.phase_max};
     return {min:settings.day_phase_min??14,target:settings.day_phase_target??15,max:settings.day_phase_max??16};
@@ -417,16 +418,18 @@ function planningValidateState_(input) {
       }
     }
     const s=state.settings;
-    requireValue(s.rules_version===undefined || s.rules_version===1 || s.rules_version===2,
+    requireValue(s.rules_version===undefined || [1,2,3].includes(s.rules_version),
       "Cette sauvegarde utilise une version plus récente des règles.");
     requireValue(s.timezone==="Europe/Paris" && [null,"wall","elapsed"].includes(s.rest_clock) &&
       integer(s.phase_min,2,60) && integer(s.phase_target,s.phase_min,60) &&
       integer(s.phase_max,s.phase_target,60) && Array.isArray(s.extra_holidays),"Paramètres de planification invalides.");
-    if (s.rules_version===2) requireValue(s.phase_min>=14 && s.phase_max<=21,
+    if (s.rules_version>=2) requireValue(s.phase_min>=14 && s.phase_max<=21,
       "Les périodes de nuit doivent rester comprises entre 14 et 21 jours.");
-    const dayPhase=phaseBounds(s,"J");
-    requireValue(integer(dayPhase.min,2,60) && integer(dayPhase.target,dayPhase.min,60) &&
-      integer(dayPhase.max,dayPhase.target,60),"Paramètres de période de jour invalides.");
+    if (s.rules_version!==3) {
+      const dayPhase=phaseBounds(s,"J");
+      requireValue(integer(dayPhase.min,2,60) && integer(dayPhase.target,dayPhase.min,60) &&
+        integer(dayPhase.max,dayPhase.target,60),"Paramètres de période de jour invalides.");
+    }
     for (const d of s.extra_holidays) serial(d);
     for (const [year,m] of Object.entries(state.oat))
       requireValue(/^\d{4}$/.test(year) && integer(m,1,366*1440),"OAT annuel invalide.");
@@ -441,7 +444,8 @@ function planningValidateState_(input) {
       serial(d);
       requireValue(plain(row),"Périodes jour/nuit invalides.");
       for (const [nid,p] of Object.entries(row))
-        requireValue(ids.has(nid) && plain(p) && ["J","N"].includes(p.mode) && integer(p.age,1,60),
+        requireValue(ids.has(nid) && plain(p) && ["J","N"].includes(p.mode) &&
+          integer(p.age,1,s.rules_version===3 && p.mode==="J"?Number.MAX_SAFE_INTEGER:60),
           "Période jour/nuit invalide.");
     }
     for (const [d,reviewed] of Object.entries(state.reviewed)) {
