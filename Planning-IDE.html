@@ -227,6 +227,10 @@
       return {min:settings.phase_min,target:settings.phase_target,max:settings.phase_max};
     return {min:settings.day_phase_min??14,target:settings.day_phase_target??15,max:settings.day_phase_max??16};
   }
+  const nameOrder = new Intl.Collator("fr", {sensitivity:"base", numeric:true});
+  function alphabeticalRoster(people) {
+    return [...people].sort((a,b)=>nameOrder.compare(a.name.trim(),b.name.trim()));
+  }
   function isActive(nurse,day) {
     return (!nurse.active_from || day>=nurse.active_from) && (!nurse.active_until || day<=nurse.active_until);
   }
@@ -1670,7 +1674,7 @@
     warnings.push("Plannings repris comme brouillons. Vérifiez les quotités, les périodes jour/nuit et les affectations.");
     return {state:candidate,warnings,placeholderContractIds};
   }
-  globalThis.PlannerDomain=Object.freeze({SHIFT_MINUTES,SHIFT_LABELS,ABSENCE_KINDS,dates,addDays,weekday,
+  globalThis.PlannerDomain=Object.freeze({SHIFT_MINUTES,SHIFT_LABELS,ABSENCE_KINDS,dates,addDays,weekday,alphabeticalRoster,
     monthBounds,previewClearMonth,previewClearRange,applyClearMonth,formatMinutes,parseDuration,newState,quotaOn,setContract,isHoliday,defaultTiih,tiihRequired,
     changeTiih,previewTiihBatch,applyTiihBatch,shiftInterval,absentFor,absenceOn,setAbsence,creditMinutes,validateState,annualTotals,validateSchedule,planningProblems,planningVacancies,
     fullWeekendPairAt,newConsecutiveFullWeekends,nightRecoveryRequired,newNightExitRestConflicts,newNightRotationConflicts,nightRotationStart,nightRotationMode,setNightRotationMode,setNightRotationStart,setNightRotationRange,nightPairSlot,nightPairOwners,nightRoleReservesDay,rollingDutyPeaks,pairTuesdayRestException,workGapDay,workGaps,adaptManualDutyPhases,
@@ -2680,7 +2684,7 @@
   const attr = (key, val) => 'data-'+key+'="'+escape(val)+'"';
 
   function view(state, {day}) {
-    const nurses = state.nurses;
+    const nurses = D.alphabeticalRoster(state.nurses);
     const dated = nurses.filter(n => n.active_from || n.active_until);
     const periods = nurses.flatMap(n => (n.quota_periods || []).map(p => ({n,p})))
       .sort((a,b) => a.p.from.localeCompare(b.p.from) || a.n.name.localeCompare(b.n.name,"fr"));
@@ -2709,7 +2713,7 @@
     if (!dialog.open) dialog.showModal();
   }
   function options(nurses, selected) {
-    return nurses.map(n => '<option value="'+escape(n.id)+'"'+(n.id===selected?" selected":"")+'>'+escape(n.name)+'</option>').join("");
+    return D.alphabeticalRoster(nurses).map(n => '<option value="'+escape(n.id)+'"'+(n.id===selected?" selected":"")+'>'+escape(n.name)+'</option>').join("");
   }
   function dateField(label,name,value) {
     return '<label class="field">'+label+'<input required type="date" name="'+name+'" value="'+escape(value)+'"></label>';
@@ -3341,7 +3345,7 @@
   }
   function exportMonth({state,year,month,nurseId=null,proposal=false,demo=false}) {
     const days=D.dates(...D.monthBounds(year,month));
-    const roster=state.nurses.filter(n=>days.some(d=>D.isActive(n,d)));
+    const roster=D.alphabeticalRoster(state.nurses.filter(n=>days.some(d=>D.isActive(n,d))));
     const person=nurseId===null?null:roster.find(n=>n.id===nurseId);
     if(nurseId!==null && !person) throw Error("Cette IDE est hors effectif pendant tout le mois demandé.");
     const monthName=capital(monthFmt.format(utc(days[0])));
@@ -3461,7 +3465,7 @@
   const editingBounds = () => [range()[0],proposal?.end>range()[1]?proposal.end:range()[1]];
   const opt = (value,text,on=false) => '<option value="'+esc(value)+'"'+(on?' selected':'')+'>'+esc(text)+'</option>';
   function rosterDuring(s,dates) {
-    return s.nurses.filter(n=>dates.some(day=>D.isActive(n,day)));
+    return D.alphabeticalRoster(s.nurses.filter(n=>dates.some(day=>D.isActive(n,day))));
   }
   const nurseOptions = (roster,id) => roster.map(n=>opt(n.id,n.name,n.id===id)).join("");
   const defaultDay = () => today.startsWith(period)?today:range()[0];
@@ -4035,7 +4039,7 @@
       if(closed && !current.length) return "";
       const selected=current.length===1?"id:"+current[0]:current.length?"keep":"vacant";
       const keep=current.length>1?opt("keep","Conserver les titulaires actuels ("+current.map(nameOf).join(", ")+")",true):"";
-      const nurses=s.nurses.filter(n=>current.includes(n.id)||!closed && D.isActive(n,day));
+      const nurses=D.alphabeticalRoster(s.nurses.filter(n=>current.includes(n.id)||!closed && D.isActive(n,day)));
       const choices=nurses.map(n=>{
         const label=n.name+(editor.protectedCell(row[n.id])?" · case protégée":"")+(D.absentFor(s,n.id,day,role)?" · absence":"");
         return opt("id:"+n.id,label,selected==="id:"+n.id);
@@ -4197,7 +4201,7 @@
   }
   function showDutyOptions(day,shift) {
     const s=displayedPlan(),row=s.assignments[day]||{},available=[],other=[],owners=globalThis.PlannerDayEditor.owners(row,shift);
-    for(const nurse of s.nurses) {
+    for(const nurse of D.alphabeticalRoster(s.nurses)) {
       if(owners.includes(nurse.id)||!D.isActive(nurse,day)) continue;
       const pick=chooseDuty(nurse.id,day,shift,nurse.name);
       if(shiftFamily(row[nurse.id]?.shift)) {
@@ -4368,11 +4372,10 @@
     }
   }
   function teamRows(effective) {
-    const rows=state.nurses.map((n,i)=>{
-      if(!D.isActive(n,effective)) return "";
+    const rows=rosterDuring(state,[effective]).map(n=>{
       const quota=D.quotaOn(n,effective), base=D.baseQuotaOn(n,effective);
-      return `<tr><td><input maxlength="90" required class="tableinput" aria-label="Nom IDE ${i+1}" name="name-${i}" value="${esc(n.name)}"></td>
-        <td><input type="number" min="1" max="100" step="1" name="quota-${i}" aria-label="Quotité IDE ${i+1}" placeholder="À saisir" value="${esc(base)}"></td>
+      return `<tr><td><input maxlength="90" required class="tableinput" aria-label="Nom de ${esc(n.name)}" name="name-${esc(n.id)}" value="${esc(n.name)}"></td>
+        <td><input type="number" min="1" max="100" step="1" name="quota-${esc(n.id)}" aria-label="Quotité de ${esc(n.name)}" placeholder="À saisir" value="${esc(base)}"></td>
         <td>${quota==null?"À saisir":quota+" %"}${(n.quota_periods||[]).some(p=>p.from<=effective && p.to>=effective)?" · temporaire":""}</td></tr>`;
     }).join("");
     return rows || '<tr><td colspan="3">Aucune IDE dans l’effectif à cette date.</td></tr>';
@@ -4426,7 +4429,7 @@
   function annualRows() {
     const annualDays=D.dates(year()+"-01-01",year()+"-12-31");
     const ids=new Set(rosterDuring(state,annualDays).map(n=>n.id));
-    return D.annualTotals(state,year()).filter(r=>ids.has(r.nurse_id));
+    return D.alphabeticalRoster(D.annualTotals(state,year()).filter(r=>ids.has(r.nurse_id)));
   }
   function annualView() {
     const rows=annualRows();
@@ -4516,7 +4519,7 @@
     const mapping=historyNames.map((name,i)=>{
       const existing=state.nurses.find(n=>n.name===name);
       return '<tr><th scope="row">'+esc(name)+'</th><td><select name="map-'+i+'" aria-label="'+esc("Associer "+name)+'">'+
-        (existing?"":opt("","Choisir une IDE",true))+state.nurses.map(n=>opt("id:"+n.id,n.name,n.id===existing?.id)).join("")+
+        (existing?"":opt("","Choisir une IDE",true))+D.alphabeticalRoster(state.nurses).map(n=>opt("id:"+n.id,n.name,n.id===existing?.id)).join("")+
         (existing?"":opt("add","Créer « "+name+" »"))+'</select></td></tr>';
     }).join("");
     showImportDialog('<form data-form="history-map"><h2 id="dialog-title">Associer les noms de l’historique</h2><p>Pour chaque nom du fichier, choisissez l’IDE correspondante dans votre équipe ou créez une nouvelle fiche.</p><div class="scroll"><table><thead><tr><th>Nom du fichier</th><th>IDE de l’équipe</th></tr></thead><tbody>'+mapping+'</tbody></table></div><p role="alert" class="issueerror"></p><div class="actions">'+btn("close","Annuler")+submit("Examiner l’import")+'</div></form>');
@@ -4568,9 +4571,9 @@
     switch(form.dataset.form) {
       case "team": {
         const effective=get("effective");
-        candidate.nurses.forEach((n,i)=>{
+        candidate.nurses.forEach(n=>{
           if(!D.isActive(n,effective)) return;
-          const name=get("name-"+i).trim(), raw=get("quota-"+i);
+          const name=get("name-"+n.id).trim(), raw=get("quota-"+n.id);
           if(!name) throw Error("Chaque IDE doit avoir un nom.");
           const quota=raw===""?null:Number(raw);
           n.name=name;
