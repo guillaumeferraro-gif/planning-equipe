@@ -1040,62 +1040,73 @@
       worked[2]==="N" && (!worked[3] || worked[3]==="-") && worked[4]==="N";
   }
 
-  // Change one inferred regime around a manual duty. Actual duties and
-  // recorded phase anchors are evidence. An automatic phase alone is not.
-  function manualPhaseChanges(state,nurse,day,shift) {
-    const id=nurse.id,phaseAt=d=>state.phases[d]?.[id];
-    const night=shift==="N", {min,max}=phaseBounds(state.settings,"N");
-    const rows=Object.keys(state.phases).filter(d=>phaseAt(d)).sort();
-    const origin=(d,p)=>addDays(d,1-p.age);
-    const anchors=rows.filter(d=>phaseAt(d).locked).map(d=>({from:origin(d,phaseAt(d)),to:d,mode:phaseAt(d).mode}));
-    const lockedNight=anchors.find(a=>a.mode==="N" && a.from<=day && a.to>=day);
-    if (!night && lockedNight)
-      throw Error(nurse.name+" · la période de nuit est fixée par le repère verrouillé du "+lockedNight.to+".");
-    const lockedDay=anchors.find(a=>a.mode==="J" && a.from<=day && day<=a.to);
-    if (night && lockedDay)
-      throw Error(nurse.name+" · la période de jour est fixée par le repère verrouillé du "+lockedDay.to+".");
-    const periods=new Map();
+  function phaseHistory(state,id) {
+    const rows=Object.keys(state.phases).filter(d=>state.phases[d]?.[id]).sort();
+    const anchors=[],periods=new Map();
     for (const d of rows) {
-      const p=phaseAt(d);
-      if (p.mode==="N") periods.set(origin(d,p),d);
+      const p=state.phases[d][id],from=addDays(d,1-p.age);
+      if (p.locked) anchors.push({from,to:d,mode:p.mode});
+      if (p.mode==="N") periods.set(from,d);
     }
-    // Even with a missing cell, a later recorded age can establish which
-    // period contains this day. A CSV with shifts alone does not establish
-    // that two neighbouring night duties are in the same period.
-    const inferred=[...periods].find(([a,b])=>a<=day && day<=b);
-    const current=phaseAt(day)??(inferred?{mode:"N",age:serial(day)-serial(inferred[0])+1}:null);
-    if (night && !current) {
-      // Unknown dates can belong to the same night period. Actual day duties,
-      // locked day regimes and employment boundaries give it a finite extent.
+    return {rows,anchors,periods};
+  }
+
+  function inferredNight(history,day) {
+    return [...history.periods].find(([start,end])=>start<=day && day<=end);
+  }
+
+  function phaseEvidenceProblem(state,nurse,day,shift,anchors,knownPhase) {
+    const night=shift==="N",min=phaseBounds(state.settings,"N").min;
+    const conflict=anchors.find(a=>(a.mode==="N")!==night && a.from<=day && day<=a.to);
+    if (conflict) return "le poste du "+day+" est incompatible avec la période de "+
+      (conflict.mode==="N"?"nuit":"jour")+" fixée par le repère verrouillé du "+conflict.to+".";
+    if (knownPhase) return null;
+    if (night) {
+      // A day duty, a locked day regime or the employment boundary limits
+      // how far a night period can extend in an otherwise sparse roster.
       let available=1;
       for (const direction of [-1,1]) for (let n=1;n<min && available<min;n++) {
-        const d=addDays(day,direction*n),code=state.assignments[d]?.[id]?.shift;
+        const d=addDays(day,direction*n),code=state.assignments[d]?.[nurse.id]?.shift;
         if (!isActive(nurse,d) || code==="J" || code==="T" ||
             anchors.some(a=>a.mode==="J" && a.from<=d && d<=a.to)) break;
         available++;
       }
-      if (available<min) throw Error(nurse.name+" · la nuit du "+day+" ne peut entrer que dans une période de "+
-        available+" jour(s) entre les limites connues. Il faut au moins "+min+" jours pour une période de nuit.");
-    }
-    if (!night && !current) {
-      // Two day duties bounding a real night leave a finite maximum length
-      // for its period, even when the imported roster has no phase entries.
+      if (available<min) return "la nuit du "+day+" ne peut entrer que dans une période de "+
+        available+" jour(s) entre les limites connues. Il faut au moins "+min+" jours pour une période de nuit.";
+    } else {
+      // Two actual day duties can bound a night period even without a saved
+      // phase. Missing history on its own is insufficient evidence.
       for (const direction of [-1,1]) {
         let sawNight=false;
         for (let n=1;n<=min;n++) {
-          const d=addDays(day,direction*n),code=state.assignments[d]?.[id]?.shift;
+          const d=addDays(day,direction*n),code=state.assignments[d]?.[nurse.id]?.shift;
           if (code==="N") sawNight=true;
           if (code==="J" || code==="T") {
-            if (sawNight) throw Error(nurse.name+" · les gardes consignées entre le "+
-              (direction<0?d:day)+" et le "+(direction<0?day:d)+" ne laissent pas les "+min+
-              " jours d’une période de nuit.");
+            if (sawNight) return "les gardes consignées entre le "+(direction<0?d:day)+" et le "+
+              (direction<0?day:d)+" ne laissent pas les "+min+" jours d’une période de nuit.";
             break;
           }
         }
       }
     }
+    return null;
+  }
+
+  class IncompatiblePhase extends Error {}
+
+  // Change one inferred regime around a manual duty. Actual duties and
+  // recorded phase anchors are evidence. An automatic phase alone is not.
+  function manualPhaseChanges(state,nurse,day,shift) {
+    const id=nurse.id,phaseAt=d=>state.phases[d]?.[id];
+    const night=shift==="N", {min,max}=phaseBounds(state.settings,"N");
+    const history=phaseHistory(state,id),{rows,anchors,periods}=history;
+    const origin=(d,p)=>addDays(d,1-p.age);
+    const inferred=inferredNight(history,day);
+    const current=phaseAt(day)??(inferred?{mode:"N",age:serial(day)-serial(inferred[0])+1}:null);
+    const problem=phaseEvidenceProblem(state,nurse,day,shift,anchors,current);
+    if (problem) throw new IncompatiblePhase(nurse.name+" · "+problem);
     if (!current || (current.mode==="N")===night) return [];
-    if (current.locked) throw Error(nurse.name+" · le régime du "+day+" est verrouillé.");
+    if (current.locked) throw new IncompatiblePhase(nurse.name+" · le régime du "+day+" est verrouillé.");
     const oldStart=night?null:origin(day,current),oldEnd=night?null:periods.get(oldStart);
     const choices=[];
     // A day duty can shorten a real night's phase at either edge. The
@@ -1158,16 +1169,22 @@
       }
       if (valid && cost<bestCost) {best=changes;bestCost=cost;}
     }
-    if (!best) throw Error(nurse.name+" · le "+day+", ce poste est incompatible avec les gardes déjà inscrites ou les repères de période. Une période de nuit doit durer "+min+" à "+max+" jours.");
+    if (!best) throw new IncompatiblePhase(nurse.name+" · le "+day+", ce poste est incompatible avec les gardes déjà inscrites ou les repères de période. Une période de nuit doit durer "+min+" à "+max+" jours.");
     return best;
   }
 
-  function adaptManualDutyPhases(before,candidate,day) {
+  function adaptManualDutyPhases(before,candidate,day,{onConflict}={}) {
     const adjusted=[],changes=[];
     for (const nurse of candidate.nurses) {
       const shift=candidate.assignments[day]?.[nurse.id]?.shift;
       if (!shifts.includes(shift) || before.assignments[day]?.[nurse.id]?.shift===shift) continue;
-      const edits=manualPhaseChanges(candidate,nurse,day,shift);
+      let edits;
+      try { edits=manualPhaseChanges(candidate,nurse,day,shift); }
+      catch (error) {
+        if (!onConflict || !(error instanceof IncompatiblePhase)) throw error;
+        onConflict({code:"regime",day,nurse_id:nurse.id,severity:"error",message:error.message});
+        continue;
+      }
       if (!edits.length) continue;
       adjusted.push({nurse_id:nurse.id,start:edits[0].day,end:edits.at(-1).day});
       for (const e of edits) changes.push({...e,id:nurse.id});
@@ -1376,15 +1393,23 @@
         if (byDay.has(sun) && ["J","T"].includes(byDay.get(mon)))
           report("monday","poste de jour le lundi "+mon+" après un week-end travaillé.",mon);
       }
-      let missing=false;
+      let missing=false,history;
       // An edited phase can also invalidate the first saved phase after the displayed month.
       for (const d of [...monthDays,addDays(end,1)]) {
         if (!isActive(nurse,d)) continue;
         const previousDay=addDays(d,-1),wasActive=isActive(nurse,previousDay);
         const p=state.phases[d]?.[nid], prev=wasActive?state.phases[previousDay]?.[nid]:null;
         if (d<=end && (!p || (wasActive && !prev))) missing=true;
-        if (!p) continue;
         const shift=byDay.get(d);
+        if (d<=end && shift) {
+          history??=phaseHistory(state,nid);
+          const inferred=!p && inferredNight(history,d);
+          const detail=phaseEvidenceProblem(state,nurse,d,shift,history.anchors,p||inferred);
+          if (detail) report("regime",detail,d);
+          else if (inferred && shift!=="N")
+            report("regime","poste du "+d+" pendant la période de nuit indiquée par le repère du "+inferred[1]+".",d);
+        }
+        if (!p) continue;
         if (d<=end && (p.age>phaseBounds(state.settings,p.mode).max || (shift && (shift==="N")!==(p.mode==="N"))))
           report("regime","poste ou durée incompatible avec la période du "+d+".",d);
         if (prev) {
@@ -2878,28 +2903,51 @@
   }
 
   const cachedProblems=new WeakMap();
-  function datedErrors(state,day) {
-    return D.validateSchedule(state,day,day,false,{partial:true}).filter(i=>i.severity==="error");
+  function datedIssues(state,day) {
+    return D.validateSchedule(state,day,day,false,{partial:true}).filter(i=>i.severity==="error" || i.severity==="info");
   }
-  function recordChanges(state,day,next,changes) {
+
+  function recordChanges(state,day,next,changes,manualOverride) {
+    const old=state.assignments[day]||{};
     const reviewed=[...new Set([...(state.reviewed[day]||[]),...changes.map(c=>c.id)])];
     const candidate={...state,assignments:{...state.assignments,[day]:next},reviewed:{...state.reviewed,[day]:reviewed}};
-    const inheritedRole=D.newNightRotationConflicts(state,candidate,[day]);
-    if(inheritedRole.length) throw Error(inheritedRole.map(c=>c.message).join("\n"));
-    const phaseChanges=D.adaptManualDutyPhases(state,candidate,day);
-    checkWeekends(state,candidate,day);
-    const recovery=D.newNightExitRestConflicts(state,candidate,[day]);
-    if(recovery.length) throw Error(recovery.map(c=>c.message).join("\n"));
-    const ids=new Set(changes.map(c=>c.id));
+    const protectedChanges=changes.filter(c=>protectedCell(old[c.id])).map(c=>({...c,
+      locked:Boolean(old[c.id].locked),confirmed:Boolean(old[c.id].confirmed)}));
+    if(!manualOverride) {
+      const role=D.newNightRotationConflicts(state,candidate,[day]);
+      if(role.length) throw Error(role.map(c=>c.message).join("\n"));
+    }
+    const phaseConflicts=[];
+    const phaseChanges=D.adaptManualDutyPhases(state,candidate,day,
+      manualOverride?{onConflict:i=>phaseConflicts.push(i)}:{});
+    if(!manualOverride) {
+      checkWeekends(state,candidate,day);
+      const recovery=D.newNightExitRestConflicts(state,candidate,[day]);
+      if(recovery.length) throw Error(recovery.map(c=>c.message).join("\n"));
+    }
+    const ids=new Set(changes.map(c=>c.id)),adding=new Set(changes.filter(c=>c.after!=="-").map(c=>c.id));
     let byDay=cachedProblems.get(state);
     if(!byDay) {byDay=new Map();cachedProblems.set(state,byDay);}
-    if(!byDay.has(day)) byDay.set(day,new Set(datedErrors(state,day).map(i=>i.message)));
+    if(!byDay.has(day)) byDay.set(day,new Set(datedIssues(state,day).map(i=>i.message)));
     const previous=byDay.get(day);
-    const problem=datedErrors(candidate,day).find(i=>ids.has(i.nurse_id) && !previous.has(i.message));
-    if(problem) throw Error(problem.message);
-    return {changes,candidate,phaseChanges};
+    // A split role can be reported against its original holder. It is still
+    // an effect of this edit even when that person's cell did not change.
+    const warnings=datedIssues(candidate,day).filter(i=>manualOverride ?
+      !previous.has(i.message) || (i.day===day && adding.has(i.nurse_id)):
+      ids.has(i.nurse_id) && !previous.has(i.message));
+    if(!manualOverride) {
+      const problem=warnings.find(i=>i.severity==="error");
+      if(problem) throw Error(problem.message);
+    } else {
+      for(const i of phaseConflicts)
+        if(!warnings.some(w=>w.code===i.code && w.nurse_id===i.nurse_id && w.day===i.day)) warnings.push(i);
+      const removed=new Set(changes.map(c=>c.before));
+      for(const v of D.planningVacancies(candidate,day,day)) if(removed.has(v.shift)) warnings.push(v);
+    }
+    return {changes,candidate,phaseChanges,warnings,protectedChanges};
   }
-  function edit(state,day,choices,lock) {
+  function edit(state,day,choices,lock,{manualOverride=false}={}) {
+    D.addDays(day,0);
     const old = state.assignments[day] || {}, next = {...old}, wanted = new Map();
     for (const role of roles) {
       const prior = owners(old,role);
@@ -2916,7 +2964,7 @@
         const nurse = state.nurses.find(n=>n.id===id);
         if (!nurse || !D.isActive(nurse,day)) throw Error("L’IDE doit faire partie de l’effectif à cette date.");
         if (role==="T" && !D.tiihRequired(state,day)) throw Error("Le TIIH est fermé à cette date.");
-        if (D.absentFor(state,id,day,role)) throw Error(nurse.name+" est en absence pendant ce poste.");
+        if (!manualOverride && D.absentFor(state,id,day,role)) throw Error(nurse.name+" est en absence pendant ce poste.");
       }
     }
     const changes = [];
@@ -2924,14 +2972,15 @@
       const before = old[id]?.shift || "-", after = wanted.get(id) || "-";
       if (before===after) continue;
       const nurse = state.nurses.find(n=>n.id===id);
-      if (protectedCell(old[id])) throw Error("La case de "+nurse.name+" est verrouillée ou confirmée. Retirez sa protection dans sa fiche pour la modifier.");
+      if (!manualOverride && protectedCell(old[id])) throw Error("La case de "+nurse.name+" est verrouillée ou confirmée. Retirez sa protection dans sa fiche pour la modifier.");
       next[id]={shift:after,locked:lock,confirmed:false};
       changes.push({id,name:nurse.name,before,after});
     }
-    if (!changes.length) return {candidate:state,changes};
-    return recordChanges(state,day,next,changes);
+    if (!changes.length) return {candidate:state,changes,phaseChanges:[],warnings:[],protectedChanges:[]};
+    return recordChanges(state,day,next,changes,manualOverride);
   }
-  function cell(state,day,id,shift,{locked=false,confirmed=false}={}) {
+  function cell(state,day,id,shift,{locked=false,confirmed=false,manualOverride=false}={}) {
+    D.addDays(day,0);
     const row=state.assignments[day]||{}, prior=row[id], nurse=state.nurses.find(n=>n.id===id);
     if(!nurse || !D.isActive(nurse,day)) throw Error("Cette IDE est hors effectif le "+day+".");
     if(!["-",...roles].includes(shift)) throw Error("Poste inconnu.");
@@ -2940,19 +2989,23 @@
     const next={...row,[id]:{shift,locked,confirmed}}, before=prior?.shift||"-";
     if(before===shift) {
       const reviewed=[...new Set([...(state.reviewed[day]||[]),id])];
-      return {candidate:{...state,assignments:{...state.assignments,[day]:next},reviewed:{...state.reviewed,[day]:reviewed}},changes:[],phaseChanges:[]};
+      const removed=(prior?.locked && !locked) || (prior?.confirmed && !confirmed);
+      const protectedChanges=manualOverride && removed?[{id,name:nurse.name,before,after:shift,locked:Boolean(prior.locked),
+        confirmed:Boolean(prior.confirmed)}]:[];
+      return {candidate:{...state,assignments:{...state.assignments,[day]:next},reviewed:{...state.reviewed,[day]:reviewed}},
+        changes:[],phaseChanges:[],warnings:[],protectedChanges};
     }
-    if(protectedCell(prior)) throw Error("La case de "+nurse.name+" est protégée le "+day+".");
+    if(!manualOverride && protectedCell(prior)) throw Error("La case de "+nurse.name+" est protégée le "+day+".");
     if(shift==="T"&&!D.tiihRequired(state,day)) throw Error("Le TIIH est fermé le "+day+".");
-    if(shift!=="-"&&D.absentFor(state,id,day,shift)) throw Error(nurse.name+" est en absence pendant ce poste le "+day+".");
+    if(!manualOverride && shift!=="-"&&D.absentFor(state,id,day,shift)) throw Error(nurse.name+" est en absence pendant ce poste le "+day+".");
     const changes=[{id,name:nurse.name,before,after:shift}];
     for(const holder of shift==="-"?[]:owners(row,shift)) {
       const other=state.nurses.find(n=>n.id===holder);
-      if(protectedCell(row[holder])) throw Error(D.SHIFT_LABELS[shift]+" du "+day+" est déjà attribué à "+other.name+" et protégé.");
+      if(!manualOverride && protectedCell(row[holder])) throw Error(D.SHIFT_LABELS[shift]+" du "+day+" est déjà attribué à "+other.name+" et protégé.");
       next[holder]={shift:"-",locked:false,confirmed:false};
       changes.push({id:holder,name:other.name,before:shift,after:"-"});
     }
-    return recordChanges(state,day,next,changes);
+    return recordChanges(state,day,next,changes,manualOverride);
   }
   globalThis.PlannerDayEditor=Object.freeze({edit,cell,owners,protectedCell,checkWeekends,checkScheduleChange});
 })();
@@ -3404,6 +3457,8 @@
   const month = () => Number(period.slice(5));
   const range = () => D.monthBounds(year(),month());
   const days = () => D.dates(...range());
+  const displayedPlan = () => proposal?.candidate || state;
+  const editingBounds = () => [range()[0],proposal?.end>range()[1]?proposal.end:range()[1]];
   const opt = (value,text,on=false) => '<option value="'+esc(value)+'"'+(on?' selected':'')+'>'+esc(text)+'</option>';
   function rosterDuring(s,dates) {
     return s.nurses.filter(n=>dates.some(day=>D.isActive(n,day)));
@@ -3603,7 +3658,7 @@
       '<div data-restart-option hidden><label><input type="checkbox" name="restart_rotation"'+(preserved?.restartNightRotation?' checked':'')+'> <span data-restart-title></span></label><p class="hint" data-restart-context></p><p class="hint" data-restart-impact aria-live="polite"></p></div>'+
       '<label><input type="checkbox" name="prioritize_continuity"'+(preserved?.prioritizeContinuity?' checked':'')+'> Priorité aux IDE sans garde depuis sept jours</label>'+
       '<p class="hint">Par défaut, le calcul couvre d’abord les SMUR. Avec cette option, il cherche en priorité à réduire les périodes sans garde, même si davantage de SMUR restent à pourvoir.</p>'+
-      (trial&&proposal?'<p class="hint">Cet essai repart du planning enregistré. Vous pourrez comparer la nouvelle proposition avant de la conserver.</p>':'')+
+      (proposal?'<p class="hint">Ce nouveau calcul repart du planning enregistré. Une nouvelle proposition remplacera l’aperçu actuel et ses retouches manuelles.</p>':'')+
       '<p data-replan-count aria-live="polite"></p><p>Les gardes et les repos verrouillés ou confirmés sont conservés. Une date de fin vide correspond à la fin du mois.</p>'+
       '<p>Les dates en dehors de l’intervalle restent telles que vous les avez saisies, y compris les postes encore vacants. Les gardes déjà prévues comptent pour les heures, les repos et le cumul des nuits.</p>'+
       '<p class="hint" data-rotation-start aria-live="polite"></p><p role="alert" class="issueerror"></p>'+
@@ -3661,7 +3716,7 @@
     const heading=preview?"Couverture de la période proposée":requested?"Couverture de la période demandée":"Couverture de "+monthText(period);
     const label=preview||requested?"Du "+shortDay(start)+" au "+shortDay(end):"Équipe entière";
     const summary=covered+" / "+totalRequired+" postes affectés";
-    const canEdit=day=>!preview && day && day.startsWith(period);
+    const [first,last]=editingBounds(),canEdit=day=>day && day>=first && day<=last;
     const edit=(day,role)=>canEdit(day)?btn("edit-day","Modifier","mini",dataAtt("day",day)+
       (role?' '+dataAtt("role",role):'')+' aria-label="'+esc("Modifier "+(role?D.SHIFT_LABELS[role]+" ":"la journée ")+"du "+shortDay(day))+'"'):"";
     let html='<section class="panel coverage-report" aria-labelledby="coverage-title"><div class="panelhead"><div><h2 id="coverage-title">'+esc(heading)+'</h2>'+
@@ -3781,7 +3836,7 @@
   function planningView() {
     const [start,end]=range(), all=days(), s=proposal?.candidate||state;
     const partial=proposal?.status==="partial";
-    const attempted=generationFailure?.noAddition?generationFailure:null;
+    const attempted=!proposal && generationFailure?.noAddition?generationFailure:null;
     const scopeStart=proposal?.start||proposal?.resumeFrom||attempted?.start||start, scopeEnd=proposal?.end||attempted?.end||end;
     const checkState=attempted?.resumeFrom?{...s,settings:{...s.settings,night_relief_periods:{...s.settings.night_relief_periods},night_rotation_from:D.nightRotationStart(s,attempted.resumeFrom)}}:s;
     if(attempted?.restartNightRotation) D.setNightRotationStart(checkState,attempted.restartNightRotation);
@@ -3797,7 +3852,7 @@
     const canResume=savedMonth || hasMonthShifts(state,D.dates(previousEnd.slice(0,7)+"-01",previousEnd));
     const disabled=busy||!roster.length?"disabled":"";
     const generationLabel=proposal||hasShifts?"Faire une autre proposition":"Générer une proposition";
-    const tools=picker()+btn("edit-day","Modifier une journée","",busy||proposal||!roster.length?"disabled":"")+
+    const tools=picker()+btn("edit-day","Modifier une journée","",busy||!roster.length?"disabled":"")+
       (!proposal?.resumeFrom?btn("generate",busy?"Recherche en cours…":generationLabel,canResume&&!proposal?"":"primary",disabled):"")+
       (canResume && (!proposal || proposal.resumeFrom)?btn("resume",proposal?.resumeFrom?"Ajuster la période":"Compléter le planning existant","primary",disabled):"");
     let out=title(monthName[0].toUpperCase()+monthName.slice(1),tools);
@@ -3837,8 +3892,15 @@
             if(Object.values(next).some(n=>n.shift===a.shift)) moved++; else vacated++;
           }
         }
-        impact+='<p>Si vous conservez cette proposition, '+moved+' garde'+(moved===1?' changera':'s changeront')+' de titulaire et '+vacated+' garde'+(vacated===1?' déjà saisie sera':'s déjà saisies seront')+' à pourvoir. Les cases protégées seront conservées.</p>';
+        impact+='<p>Si vous conservez cette proposition, '+moved+' garde'+(moved===1?' changera':'s changeront')+' de titulaire et '+vacated+' garde'+(vacated===1?' déjà saisie sera':'s déjà saisies seront')+' à pourvoir.</p>';
       }
+      if(proposal.manualDays?.length) {
+        const outside=proposal.manualDays.filter(d=>d<scopeStart||d>scopeEnd);
+        impact+='<p><strong>Modifications manuelles dans cette proposition</strong> · '+proposal.manualDays.map(shortDay).map(esc).join(", ")+'.</p>';
+        if(outside.length) impact+='<p>'+outside.length+' date'+(outside.length>1?'s retouchées':' retouchée')+' hors de la période de calcul · '+outside.map(shortDay).map(esc).join(", ")+'. Ces modifications seront aussi enregistrées si vous conservez la proposition.</p>';
+      }
+      if(proposal.outsideIssues?.length) impact+='<details><summary>Points à vérifier sur les dates retouchées hors période</summary><ul>'+
+        [...new Set(proposal.outsideIssues.map(i=>i.message))].map(m=>'<li>'+esc(m)+'</li>').join("")+'</ul></details>';
       const summary=partial?"Proposition partielle":proposal.resumeFrom?"Complément du "+shortDay(proposal.resumeFrom)+" au "+shortDay(proposal.resumeUntil):"Proposition à examiner";
       out+='<aside class="proposal'+(partial?' proposal-partial':'')+'"><div><strong>'+esc(summary)+'</strong><p>'+esc(proposal.message)+'</p>'+diff+impact+
         '<small>'+(proposal.end && !proposal.resumeFrom && !partial?'Affectations proposées jusqu’au '+esc(shortDay(proposal.end)):'')+'</small></div><div class="actions">'+
@@ -3860,10 +3922,10 @@
     const gaps=D.workGaps(s,scopeStart,scopeEnd,{assumePlanned:Boolean(proposal)}).filter(g=>!individual||g.nurse_id===person?.id);
     out+=workGapView(gaps,scopeStart,scopeEnd);
     out+=nightHoursView((problems.nightOverruns||[]).filter(entry=>!individual || entry.nurse_id===person?.id));
-    out+='<section class="panel"><div class="panelhead"><div><h2>'+(partial?"Planning proposé · brouillon":proposal?"Planning proposé":savedMonth?"Planning enregistré":"Planning à remplir")+'</h2><p class="subtle">'+(proposal?"Consultez les postes avant de conserver la proposition.":"Sélectionnez un poste ou une journée pour modifier l’affectation.")+'</p></div>'+
+    out+='<section class="panel"><div class="panelhead"><div><h2>'+(partial?"Planning proposé · brouillon":proposal?"Planning proposé":savedMonth?"Planning enregistré":"Planning à remplir")+'</h2><p class="subtle">'+(proposal?"Vous pouvez modifier un poste ou une journée dans cet aperçu. Conservez la proposition pour enregistrer vos choix.":"Sélectionnez un poste ou une journée pour modifier l’affectation.")+'</p></div>'+
       '<div class="actions"><div class="weekbar viewbar" role="group" aria-label="Vue du planning">'+btn("planning-mode","Équipe","",dataAtt("mode","team")+' aria-pressed="'+!individual+'"')+btn("planning-mode","Par IDE","",dataAtt("mode","individual")+' aria-pressed="'+individual+'"')+'</div>'+
       btn("export-pdf","Exporter en PDF","",person?'title="'+esc(individual?"Planning de "+person.name:"Planning de toute l’équipe")+'"':"disabled")+'</div></div>';
-    if(person) out+=individual?individualAgenda(s,person,all,roster):teamGrid(s,all,roster,problems.vacancies);
+    if(person) out+=individual?individualAgenda(s,person,all,roster):teamGrid(s,all,roster,scopeStart===start && scopeEnd===end?problems.vacancies:D.planningVacancies(s,start,end));
     else out+='<div class="notice"><p>Aucune IDE dans l’effectif ce mois-ci.</p>'+btn("page","Gérer les agents","",dataAtt("page","team"))+'</div>';
     const warnings=problems.warnings.filter(i=>!individual||!i.nurse_id||i.nurse_id===person?.id);
     if(warnings.length) out+='<details class="validation"><summary>'+warnings.length+' point'+(warnings.length>1?'s':'')+' de contexte</summary><ul>'+
@@ -3871,7 +3933,7 @@
     out+='</section>';
     if(!individual && proposal?.end>end) {
       const future=D.dates(D.addDays(end,1),proposal.end);
-      out+='<details class="panel"><summary>Voir l’anticipation jusqu’au '+esc(shortDay(proposal.end))+'</summary><div class="scroll"><table><thead><tr><th>Date</th><th>SMUR J</th><th>SMUR N</th><th>TIIH</th></tr></thead><tbody>'+future.map(d=>'<tr><th>'+esc(shortDay(d))+'</th>'+["J","N","T"].map(c=>'<td>'+esc(s.nurses.filter(n=>s.assignments[d]?.[n.id]?.shift===c).map(n=>n.name).join(", ")||"—")+'</td>').join("")+'</tr>').join("")+'</tbody></table></div></details>';
+      out+='<details class="panel"><summary>Voir l’anticipation jusqu’au '+esc(shortDay(proposal.end))+'</summary><div class="scroll"><table><thead><tr><th>Date</th><th>SMUR J</th><th>SMUR N</th><th>TIIH</th></tr></thead><tbody>'+future.map(d=>'<tr><th>'+btn("edit-day",shortDay(d),"mini",dataAtt("day",d))+'</th>'+["J","N","T"].map(c=>'<td>'+esc(s.nurses.filter(n=>s.assignments[d]?.[n.id]?.shift===c).map(n=>n.name).join(", ")||"—")+'</td>').join("")+'</tr>').join("")+'</tbody></table></div></details>';
     }
     return out+(individual || !roster.length?"":balanceView(s,Boolean(proposal)))+'<div class="bottomaction actions">'+(!demo && Object.keys(state.assignments).length?btn("demo","Essayer avec une équipe fictive"):"")+btn("csv",individual?"Exporter toute l’équipe en CSV":proposal?"Exporter la proposition en CSV":"Exporter le mois en CSV","",roster.length?"":"disabled")+'</div>';
   }
@@ -3899,7 +3961,7 @@
     const headings=shown.map(day=>{
       const label=esc(dateFmt(day,{weekday:full?"narrow":"short"}))+'<span>'+Number(day.slice(-2))+'</span>';
       const attributes=dataAtt("day",day)+' aria-label="'+esc("Modifier la journée du "+shortDay(day))+'"';
-      const heading=proposal?label:'<button type="button" class="date-edit" data-act="edit-day" '+attributes+'>'+label+'</button>';
+      const heading='<button type="button" class="date-edit" data-act="edit-day" '+attributes+'>'+label+'</button>';
       return '<th scope="col" class="'+(D.weekday(day)>4?"weekend":"")+'">'+heading+'</th>';
     }).join("");
     const rows=roster.map(n=>'<tr><th scope="row">'+esc(n.name)+'</th>'+shown.map(day=>{
@@ -3908,7 +3970,7 @@
       const classes="cell "+(unknown?"unassigned":code==="-"?"empty":code)+(a?.locked||a?.confirmed?" locked":"");
       const slot=shiftHours(s,day,code);
       const tag=esc(n.name+", "+shortDay(day)+", "+label+(slot?", "+slot:""));
-      return '<td class="'+(D.weekday(day)>4?"weekend":"")+'">'+btn("cell",mark,classes,dataAtt("nurse",n.id)+' '+dataAtt("day",day)+' aria-label="'+tag+'" title="'+tag+'"'+(proposal || code==="X"?" disabled":""))+'</td>';
+      return '<td class="'+(D.weekday(day)>4?"weekend":"")+'">'+btn("cell",mark,classes,dataAtt("nurse",n.id)+' '+dataAtt("day",day)+' aria-label="'+tag+'" title="'+tag+'"'+(code==="X"?" disabled":""))+'</td>';
     }).join("")+'</tr>').join("");
     const openByDay=new Map();
     for(const v of vacancies) {
@@ -3920,8 +3982,7 @@
         const shifts=openByDay.get(day);
         if(!shifts) return '<td></td>';
         const label=shifts.join(' · '), description=shortDay(day)+' · '+shifts.map(c=>D.SHIFT_LABELS[c]).join(', ')+' à pourvoir';
-        const value=proposal?'<span title="'+esc(description)+'">'+esc(label)+'</span>':
-          btn("edit-day",label,"",dataAtt("day",day)+' '+dataAtt("role",shifts[0])+' aria-label="'+esc(description)+'"');
+        const value=btn("edit-day",label,"",dataAtt("day",day)+' '+dataAtt("role",shifts[0])+' aria-label="'+esc(description)+'"');
         return '<td>'+value+'</td>';
       }).join("")+'</tr>':'';
     const adjusted=shown.filter(day=>D.tiihRequired(s,day) && D.shiftMinutes(s,day,"T")!==D.SHIFT_MINUTES.T);
@@ -3941,64 +4002,53 @@
       const tag=esc(person.name+", "+shortDay(day)+", "+label+(slot?", "+slot:""));
       const dayLabel=esc(dateFmt(day,{weekday:"short",day:"numeric",month:"short"}));
       const protection=a?.locked||a?.confirmed;
-      return '<li><button type="button" class="agenda-day'+(D.weekday(day)>4?" weekend":"")+'" data-act="cell" '+dataAtt("nurse",person.id)+' '+dataAtt("day",day)+' aria-label="'+tag+'"'+(proposal || code==="X"?' disabled':'')+'><span class="agenda-date">'+dayLabel+'</span><span class="agenda-label '+(unknown?"unassigned":code==="-"?"empty":code)+(protection?" locked":"")+'">'+esc(label)+'</span><span class="agenda-time">'+slot+'</span></button></li>';
+      return '<li><button type="button" class="agenda-day'+(D.weekday(day)>4?" weekend":"")+'" data-act="cell" '+dataAtt("nurse",person.id)+' '+dataAtt("day",day)+' aria-label="'+tag+'"'+(code==="X"?' disabled':'')+'><span class="agenda-date">'+dayLabel+'</span><span class="agenda-label '+(unknown?"unassigned":code==="-"?"empty":code)+(protection?" locked":"")+'">'+esc(label)+'</span><span class="agenda-time">'+slot+'</span></button></li>';
     }).join("");
     const csv=btn("csv-individual","Exporter le mois de cette IDE en CSV");
     const [history]=balanceRows(s,[person]);
     return '<div class="person-tools"><label class="field">IDE affichée<select id="individual-nurse">'+nurseOptions(roster,person.id)+'</select></label>'+csv+'</div><div class="person-summary"><strong>'+esc(D.formatMinutes(total))+' de postes</strong><span>'+count.J+' SMUR J</span><span>'+count.N+' SMUR N</span><span>'+count.T+' TIIH</span><span>Cumul des nuits, historique compris · '+(history.pastN+history.N)+'</span></div><ul class="agenda" aria-label="'+esc("Planning mensuel de "+person.name)+'">'+list+'</ul>';
   }
+  const formPlan=new WeakMap();
+  function openManualForm() {
+    const form=dialog.querySelector("form");
+    formPlan.set(form,displayedPlan());
+    if(!dialog.open) dialog.showModal();
+    refreshManualForm(form);
+  }
+  function manualContext(day) {
+    if(!proposal) return "";
+    const outside=day<proposal.start || day>proposal.end;
+    return '<p class="hint">Vous modifiez la proposition en cours. '+(outside?'Cette date est hors de la période de calcul. ':'')+
+      'Vos choix seront enregistrés avec le bouton Conserver.</p>';
+  }
+  function manualControls() {
+    return '<div class="day-preview" data-manual-preview aria-live="polite"></div><p role="alert" class="issueerror"></p>'+
+      '<div data-protection hidden><label><input type="checkbox" name="confirm_protected"> Je confirme la modification des cases protégées indiquées ci-dessus.</label></div>'+
+      '<div data-manual-options></div><div class="actions">'+btn("close","Annuler")+submit("Enregistrer")+'</div>';
+  }
   function showDayEditor(day) {
-    const [first,last]=range();
-    if(proposal || day<first || day>last) throw Error("Choisissez une date dans le mois du planning enregistré.");
-    const row=state.assignments[day]||{}, editor=globalThis.PlannerDayEditor;
+    const [first,last]=editingBounds(),s=displayedPlan();
+    if(day<first || day>last) throw Error("Choisissez une date du planning affiché.");
+    const row=s.assignments[day]||{},editor=globalThis.PlannerDayEditor;
     const fields=["J","N","T"].map(role=>{
-      const current=editor.owners(row,role), closed=role==="T"&&!D.tiihRequired(state,day);
+      const current=editor.owners(row,role),closed=role==="T"&&!D.tiihRequired(s,day);
       if(closed && !current.length) return "";
       const selected=current.length===1?"id:"+current[0]:current.length?"keep":"vacant";
       const keep=current.length>1?opt("keep","Conserver les titulaires actuels ("+current.map(nameOf).join(", ")+")",true):"";
-      const nurses=state.nurses.filter(n=>current.includes(n.id) || !closed && D.isActive(n,day));
+      const nurses=s.nurses.filter(n=>current.includes(n.id)||!closed && D.isActive(n,day));
       const choices=nurses.map(n=>{
-        const assigned=current.includes(n.id), fixed=!assigned && editor.protectedCell(row[n.id]);
-        const absent=D.absentFor(state,n.id,day,role);
-        const label=n.name+(fixed?" · case protégée":absent?" · absence":"");
-        return '<option value="'+esc("id:"+n.id)+'"'+(selected==="id:"+n.id?' selected':'')+
-          (!assigned && (fixed || absent)?' disabled':'')+'>'+esc(label)+'</option>';
+        const label=n.name+(editor.protectedCell(row[n.id])?" · case protégée":"")+(D.absentFor(s,n.id,day,role)?" · absence":"");
+        return opt("id:"+n.id,label,selected==="id:"+n.id);
       }).join("");
-      const label=D.SHIFT_LABELS[role]+" · "+(closed?"hors calendrier":shiftHours(state,day,role));
+      const label=D.SHIFT_LABELS[role]+" · "+(closed?"hors calendrier":shiftHours(s,day,role));
       return '<label class="field">'+esc(label)+'<select name="role-'+role+'">'+keep+
         opt("vacant",closed?"Retirer l’affectation":"À pourvoir",selected==="vacant")+choices+'</select></label>';
     }).join("");
-    dialog.innerHTML='<form data-form="edit-day" '+dataAtt("day",day)+'><h2 id="dialog-title">Modifier une journée</h2>'+
+    dialog.innerHTML='<form data-form="edit-day" '+dataAtt("day",day)+'><h2 id="dialog-title">Modifier une journée</h2>'+manualContext(day)+
       '<label class="field">Date du planning<input type="date" id="edit-day-date" required min="'+first+'" max="'+last+'" value="'+day+'"></label>'+
-      fields+'<div class="actions">'+["J","N","T"].filter(r=>r!=="T"||D.tiihRequired(state,day)).map(r=>btn("duty-options","IDE possibles · "+D.SHIFT_LABELS[r],"mini",dataAtt("day",day)+' '+dataAtt("role",r))).join("")+'</div><label><input type="checkbox" name="lock-changes"> Verrouiller les cases modifiées pour les prochains calculs</label>'+
-      '<div class="day-preview" aria-live="polite"></div><p class="issueerror" role="alert"></p>'+
-      '<div class="actions">'+btn("close","Annuler")+submit("Enregistrer cette journée")+'</div></form>';
-    if(!dialog.open) dialog.showModal();
-    refreshDayEditor(dialog.querySelector("form"));
-  }
-  function dayEdits(form) {
-    const choices={};
-    for (const role of ["J","N","T"]) {
-      const field=form.elements["role-"+role];
-      if(field) choices[role]=field.value;
-    }
-    return globalThis.PlannerDayEditor.edit(state,form.dataset.day,choices,form.elements["lock-changes"].checked);
-  }
-  function refreshDayEditor(form) {
-    const day=form.dataset.day, box=form.querySelector(".day-preview"), alert=form.querySelector('[role=alert]');
-    const submitButton=form.querySelector('[type=submit]'), date=form.querySelector("#edit-day-date");
-    box.replaceChildren(); alert.textContent="";
-    try {
-      const {candidate,changes,phaseChanges}=dayEdits(form);
-      submitButton.disabled=!changes.length;
-      date.disabled=Boolean(changes.length);
-      if(!changes.length) return;
-      const conflicts=D.validateSchedule(candidate,day,day).filter(i=>i.severity==="error");
-      box.innerHTML='<p><strong>'+esc(shortDay(day))+'</strong></p><ul>'+changes.map(c=>'<li>'+esc(c.name)+' · '+
-        esc(D.SHIFT_LABELS[c.before])+' → '+esc(D.SHIFT_LABELS[c.after])+'</li>').join("")+'</ul>'+
-        phaseChangeNote(phaseChanges)+(conflicts.length?'<details open><summary>'+conflicts.length+' point(s) à corriger dans le brouillon</summary><ul>'+
-          conflicts.map(i=>'<li>'+esc(i.message)+'</li>').join("")+'</ul></details>':"");
-    } catch(error) {submitButton.disabled=true;date.disabled=true;alert.textContent=error.message;}
+      fields+'<div class="actions">'+["J","N","T"].filter(r=>r!=="T"||D.tiihRequired(s,day)).map(r=>btn("duty-options","IDE possibles · "+D.SHIFT_LABELS[r],"mini",dataAtt("day",day)+' '+dataAtt("role",r))).join("")+'</div><label><input type="checkbox" name="lock-changes"> Verrouiller les cases modifiées pour les prochains calculs</label>'+
+      manualControls()+'</form>';
+    openManualForm();
   }
   function phaseChangeNote(changes) {
     if(!changes?.length) return "";
@@ -4006,51 +4056,93 @@
       esc(nameOf(c.nurse_id))+' du '+esc(shortDay(c.start))+' au '+esc(shortDay(c.end))).join(" · ")+'.</p>';
   }
   function showEditor(id,day,selected=null) {
-    if(!state.nurses.some(n=>n.id===id && D.isActive(n,day))) throw Error("Cette IDE est hors effectif à cette date.");
-    const {a,unknown}=cellInfo(state,id,day);
-    const absent=D.absenceOn(state,id,day);
-    dialog.innerHTML='<form data-form="cell" '+dataAtt("nurse",id)+' '+dataAtt("day",day)+'><p class="caps">'+esc(shortDay(day))+'</p><h2 id="dialog-title">'+esc(nameOf(id))+'</h2>'+
-      (unknown?'<p>La case « ? » signifie qu’aucun poste ni repos n’a été saisi pour cette IDE. Le choix d’un poste permet de vérifier sa disponibilité.</p>':'')+
-      '<div class="fields"><label>Poste<select name="shift">'+["-","J","N","T"].map(c=>opt(c,D.SHIFT_LABELS[c]+(c==="T"?" · "+shiftHours(state,day,c):""),c===(selected||a?.shift||"-"))).join("")+'</select></label></div>'+
-      (absent?'<p class="hint">Une absence est enregistrée à cette date.</p>':"")+
-      '<p><label><input type="checkbox" name="locked" '+(a?.locked?"checked":"")+'> Verrouiller le poste ou le repos</label></p>'+
-      '<p><label><input type="checkbox" name="confirmed" '+(a?.confirmed?"checked":"")+'> Confirmer le poste réalisé</label></p>'+
-      '<div data-cell-preview aria-live="polite"></div><p role="alert" class="issueerror"></p><div data-cell-options></div>'+
-      '<div class="actions">'+btn("close","Annuler")+submit("Enregistrer")+'</div></form>';
-    if(!dialog.open) dialog.showModal();
-    refreshCellChecks(dialog.querySelector("form"));
+    const s=displayedPlan(),[first,last]=editingBounds();
+    if(day<first || day>last) throw Error("Choisissez une date du planning affiché.");
+    if(!s.nurses.some(n=>n.id===id && D.isActive(n,day))) throw Error("Cette IDE est hors effectif à cette date.");
+    const {a,unknown}=cellInfo(s,id,day),role=selected||a?.shift||"-",same=!a || role===a.shift;
+    const choices=["-","J","N",...(D.tiihRequired(s,day)||a?.shift==="T"?["T"]:[])];
+    dialog.innerHTML='<form data-form="cell" '+dataAtt("nurse",id)+' '+dataAtt("day",day)+'><p class="caps">'+esc(shortDay(day))+'</p><h2 id="dialog-title">'+esc(nameOf(id))+'</h2>'+manualContext(day)+
+      (unknown?'<p>La case « ? » signifie qu’aucun poste ni repos n’a été saisi pour cette IDE.</p>':'')+
+      '<div class="fields"><label>Poste<select name="shift">'+choices.map(c=>opt(c,D.SHIFT_LABELS[c]+(c==="T"?" · "+shiftHours(s,day,c):""),c===role)).join("")+'</select></label></div>'+
+      (D.absenceOn(s,id,day)?'<p class="hint">Une absence est enregistrée à cette date.</p>':"")+
+      '<p><label><input type="checkbox" name="locked" '+(same&&a?.locked?"checked":"")+'> Verrouiller le poste ou le repos</label></p>'+
+      '<p><label><input type="checkbox" name="confirmed" '+(same&&a?.confirmed?"checked":"")+'> Confirmer le poste réalisé</label></p>'+
+      manualControls()+'</form>';
+    openManualForm();
   }
-  function cellEdits(form) {
-    return globalThis.PlannerDayEditor.cell(state,form.dataset.day,form.dataset.nurse,form.elements.shift.value,
-      {locked:form.elements.locked.checked,confirmed:form.elements.confirmed.checked});
+  function manualEdits(form) {
+    const s=displayedPlan(),{day,nurse}=form.dataset,opts={manualOverride:true},editor=globalThis.PlannerDayEditor;
+    if(formPlan.get(form)!==s) throw Error("Le planning a changé depuis l’ouverture de cette fenêtre. Rouvrez la journée pour la modifier.");
+    if(form.dataset.form==="cell") return editor.cell(s,day,nurse,form.elements.shift.value,
+      {...opts,locked:form.elements.locked.checked,confirmed:form.elements.confirmed.checked});
+    const choices={};
+    for(const role of ["J","N","T"]) if(form.elements["role-"+role]) choices[role]=form.elements["role-"+role].value;
+    return editor.edit(s,day,choices,form.elements["lock-changes"].checked,opts);
   }
-  function rotationSettingsLink() {
-    const anchor=state.settings.night_rotation_from;
-    return btn("check-rotation-start",anchor?"Vérifier le début du roulement · "+shortDay(anchor):"Vérifier le début du roulement");
+  function sameManualDay(a,b,day) {
+    return a.nurses.every(({id})=>{
+      const before=a.assignments[day]?.[id],after=b.assignments[day]?.[id];
+      const known=(s,cell)=>Boolean(cell || s.reviewed[day]?.includes(id));
+      const p=a.phases[day]?.[id],q=b.phases[day]?.[id];
+      return (before?.shift||"-")===(after?.shift||"-") && Boolean(before?.locked)===Boolean(after?.locked) &&
+        Boolean(before?.confirmed)===Boolean(after?.confirmed) && known(a,before)===known(b,after) &&
+        p?.mode===q?.mode && p?.age===q?.age && Boolean(p?.locked)===Boolean(q?.locked);
+    });
   }
-  function refreshCellChecks(form) {
-    const {day,nurse:id}=form.dataset,shift=form.elements.shift.value;
-    const alert=form.querySelector('[role=alert]'),button=form.querySelector('[type=submit]'),preview=form.querySelector('[data-cell-preview]');
-    const opts=form.querySelector('[data-cell-options]');
-    alert.textContent="";preview.replaceChildren();button.disabled=false;button.textContent="Enregistrer";
-    opts.innerHTML=shift!=="-"?btn("duty-options","Voir les IDE possibles pour "+D.SHIFT_LABELS[shift],"mini",dataAtt("day",day)+' '+dataAtt("role",shift)):"";
+  function refreshManualForm(form,keepConfirmation=false) {
+    const s=displayedPlan(),{day,nurse:id}=form.dataset,cell=form.dataset.form==="cell",shift=cell?form.elements.shift.value:null;
+    const alert=form.querySelector('[role=alert]'),button=form.querySelector('[type=submit]'),box=form.querySelector('[data-manual-preview]');
+    const protect=form.querySelector('[data-protection]'),confirm=form.elements.confirm_protected;
+    const date=form.elements["edit-day-date"],opts=form.querySelector('[data-manual-options]');
+    if(!keepConfirmation) confirm.checked=false;
+    protect.hidden=true;confirm.required=false;button.disabled=true;alert.textContent="";box.replaceChildren();
+    opts.innerHTML=cell && shift!=="-"?btn("duty-options","Voir les IDE possibles pour "+D.SHIFT_LABELS[shift],"mini",dataAtt("day",day)+' '+dataAtt("role",shift)):"";
     try {
-      const result=cellEdits(form);
-      const {changes,phaseChanges}=result;
-      const gap=donorGap(state,result,day);
-      const previous=changes.filter(c=>c.id!==id);
-      if(changes.length) preview.innerHTML='<ul>'+changes.map(c=>'<li>'+esc(c.name)+' · '+esc(D.SHIFT_LABELS[c.before])+' → '+esc(D.SHIFT_LABELS[c.after])+'</li>').join("")+'</ul>'+phaseChangeNote(phaseChanges);
-      if(gap) preview.innerHTML+='<p class="hint">Ce remplacement laisserait '+esc(nameOf(gap.nurse_id))+' sans garde du '+esc(shortDay(gap.start))+' au '+esc(shortDay(gap.end))+'.</p>';
-      if(previous.length) button.textContent="Réattribuer "+D.SHIFT_LABELS[shift]+" à "+nameOf(id);
-    } catch(error) {
-      alert.textContent=error.message;button.disabled=true;
-      if(/quinzaine|rôle|roulement|trame/.test(error.message)) opts.innerHTML+=' '+rotationSettingsLink();
-      const gap=D.workGaps(state,day,day).find(g=>g.nurse_id===id);
-      if(gap) {
-        const [first,last]=range(),from=gap.start<first?first:gap.start,until=gap.end>last?last:gap.end;
-        opts.innerHTML+=' '+btn("gap-options","Chercher un autre poste pour "+nameOf(id),"mini",dataAtt("nurse",id)+' '+dataAtt("from",from)+' '+dataAtt("until",until));
+      const change=manualEdits(form),{changes,warnings=[],protectedChanges=[]}=change;
+      if(date) date.disabled=Boolean(changes.length);
+      const warn=warnings.length>0;
+      button.textContent=warn?(proposal?"Appliquer malgré les alertes":"Enregistrer malgré les alertes"):
+        proposal?"Appliquer à la proposition":cell && changes.some(c=>c.id!==id)?"Réattribuer "+D.SHIFT_LABELS[shift]+" à "+nameOf(id):cell?"Enregistrer":"Enregistrer cette journée";
+      button.disabled=sameManualDay(s,change.candidate,day)||(protectedChanges.length>0&&!confirm.checked);
+      if(changes.length) box.innerHTML='<ul>'+changes.map(c=>'<li>'+esc(c.name)+' · '+esc(D.SHIFT_LABELS[c.before])+' → '+esc(D.SHIFT_LABELS[c.after])+'</li>').join("")+'</ul>'+phaseChangeNote(change.phaseChanges);
+      if(protectedChanges.length) {
+        protect.hidden=false;confirm.required=true;
+        box.innerHTML+='<strong>Cases protégées à modifier</strong><ul>'+protectedChanges.map(c=>'<li>'+esc(c.name)+' · '+esc(shortDay(day))+' · '+
+          esc(D.SHIFT_LABELS[c.before])+' ('+[c.locked?"verrouillé":"",c.confirmed?"confirmé":""].filter(Boolean).join(" et ")+')</li>').join("")+'</ul>';
       }
+      if(warn) box.innerHTML+='<div class="manual-warnings"><strong>Alertes pour cette modification</strong><ul>'+warnings.map(w=>'<li>'+esc(w.message)+'</li>').join("")+'</ul></div>';
+      const gap=donorGap(s,change,day);
+      if(gap) box.innerHTML+='<p class="hint">Ce remplacement laisserait '+esc(nameOf(gap.nurse_id))+' sans garde du '+esc(shortDay(gap.start))+' au '+esc(shortDay(gap.end))+'.</p>';
+    } catch(error) {if(date) date.disabled=true;alert.textContent=error.message;}
+  }
+  function commitManualForm(form) {
+    const s=displayedPlan(),day=form.dataset.day,change=manualEdits(form);
+    if(change.protectedChanges?.length&&!form.elements.confirm_protected.checked) throw Error("Confirmez les cases protégées à modifier.");
+    if(sameManualDay(s,change.candidate,day)) return;
+    const candidate=change.candidate;
+    if(!proposal) {
+      save(candidate,"Journée du "+shortDay(day)+" enregistrée.");
+    } else {
+      const base=proposal.manualBase||s;
+      const dates=[...new Set([...(proposal.manualDays||[]),day])].sort();
+      const manualDays=dates.filter(d=>!sameManualDay(base,candidate,d));
+      const {start,end}=proposal;
+      const current=D.planningProblems(candidate,start,end,{continuation:Boolean(proposal.resumeFrom)});
+      const outside=manualDays.filter(d=>d<start||d>end);
+      const outsideIssues=outside.flatMap(d=>{
+        const report=D.planningProblems(candidate,d,d,{continuation:true});
+        return report.conflicts.concat(report.vacancies);
+      });
+      const partial=Boolean(current.vacancies.length||current.conflicts.length||outsideIssues.length);
+      let changedAssignments=0;
+      for(const d of new Set([...D.dates(start,end),...outside])) for(const n of candidate.nurses) {
+        if((state.assignments[d]?.[n.id]?.shift||"-")!==(candidate.assignments[d]?.[n.id]?.shift||"-")) changedAssignments++;
+      }
+      proposal={...proposal,candidate,manualBase:base,manualDays,outsideIssues,status:partial?"partial":"feasible",changedAssignments,afterPreview:false,
+        message:current.covered+" / "+current.totalRequired+" postes attribués du "+shortDay(start)+" au "+shortDay(end)+".",nightPattern:E.summarizeNights(candidate,start,end)};
+      generationFailure=null;notify("Modification appliquée à la proposition.");render();
     }
+    dialog.close();
   }
   function workGapView(gaps,start,end) {
     if(!gaps.length) return "";
@@ -4071,51 +4163,56 @@
     return D.workGaps(result.candidate,day,day).find(g=>donors.includes(g.nurse_id) &&
       !known.some(k=>k.nurse_id===g.nurse_id&&k.start<=g.start&&k.end>=g.end));
   }
+  function chooseDuty(id,day,shift,label) {
+    return btn("prepare-duty",label,"mini",dataAtt("id",id)+' '+dataAtt("day",day)+' '+dataAtt("role",shift));
+  }
   async function showGapOptions(id,from,until) {
-    const s=proposal?.candidate||state,offer=proposal,available=[],reasons=new Set();
-    const first=shortDay(from),last=shortDay(until);
-    dialog.innerHTML='<h2 id="dialog-title">Postes possibles pour '+esc(nameOf(id))+'</h2><p>Du '+esc(first)+' au '+esc(last)+'</p><div data-gap-results role="status">Vérification des postes au planning…</div><div class="actions">'+btn("close","Fermer")+'</div>';
+    const s=displayedPlan(),available=[],other=[];
+    dialog.innerHTML='<h2 id="dialog-title">Postes possibles pour '+esc(nameOf(id))+'</h2><p>Du '+esc(shortDay(from))+' au '+esc(shortDay(until))+'</p><div data-gap-results role="status">Vérification des postes au planning…</div><div class="actions">'+btn("close","Fermer")+'</div>';
     if(!dialog.open) dialog.showModal();
     const box=dialog.querySelector("[data-gap-results]");
     for(const day of D.dates(from,until)) {
       await new Promise(resolve=>setTimeout(resolve,0));
-      if(!box.isConnected || !dialog.open || s!==(proposal?.candidate||state)) return;
+      if(!box.isConnected || !dialog.open || s!==displayedPlan()) return;
       for(const shift of ["J","T","N"]) {
         if(shift==="T"&&!D.tiihRequired(s,day)) continue;
+        const names=globalThis.PlannerDayEditor.owners(s.assignments[day]||{},shift).filter(n=>n!==id).map(nameOf);
+        const item={day,shift,names};
         try {
           const change=globalThis.PlannerDayEditor.cell(s,day,id,shift);
-          const missing=donorGap(s,change,day);
-          if(missing) {reasons.add("Ce remplacement prolongerait une période sans garde pour "+nameOf(missing.nurse_id)+".");continue;}
-          const names=change.changes.filter(c=>c.id!==id).map(c=>c.name);
-          available.push({day,shift,names});
-        } catch(error) {reasons.add(error.message);}
+          const gap=donorGap(s,change,day);
+          if(gap) other.push({...item,reason:"Ce remplacement prolongerait la période sans garde de "+nameOf(gap.nurse_id)+"."});
+          else available.push(item);
+        } catch(error) {other.push({...item,reason:error.message});}
       }
     }
-    const group=(items,title)=>items.length?'<h3>'+title+'</h3><ul>'+items.map(x=>{
+    const list=items=>'<ul>'+items.map(x=>{
       const label=shortDay(x.day)+' · '+D.SHIFT_LABELS[x.shift]+(x.names.length?' · à reprendre à '+x.names.join(", "):'');
-      return '<li>'+(offer?esc(label):btn("prepare-duty",label,"mini",dataAtt("id",id)+' '+dataAtt("day",x.day)+' '+dataAtt("role",x.shift)))+'</li>';
-    }).join("")+'</ul>':"";
+      return '<li>'+chooseDuty(id,x.day,x.shift,label)+(x.reason?' '+esc(x.reason):'')+'</li>';
+    }).join("")+'</ul>';
+    const group=(items,title)=>items.length?'<h3>'+title+'</h3>'+list(items):"";
     box.innerHTML=group(available.filter(x=>!x.names.length),"Postes à pourvoir")+group(available.filter(x=>x.names.length),"Réaffectations possibles")+
-      (!available.length?'<p>Aucune affectation individuelle compatible trouvée sur ces dates.</p>':'')+
-      (offer&&available.length?'<p>Pour modifier une affectation de cet aperçu, conservez la proposition.</p>':'')+
-      (reasons.size?'<details><summary>Voir les empêchements rencontrés</summary><ul>'+[...reasons].map(r=>'<li>'+esc(r)+'</li>').join("")+'</ul></details>':'')+
-      ([...reasons].some(r=>/quinzaine|rôle|trame|roulement/.test(r))?rotationSettingsLink():'');
+      (!available.length?'<p>Aucun poste compatible avec toutes les règles sur ces dates.</p>':'')+
+      (other.length?'<details><summary>Choisir un autre poste manuellement ('+other.length+')</summary>'+list(other)+'</details>':'');
   }
   function showDutyOptions(day,shift) {
-    const s=proposal?.candidate||state,row=s.assignments[day]||{},available=[],blocked=[],owners=globalThis.PlannerDayEditor.owners(row,shift);
+    const s=displayedPlan(),row=s.assignments[day]||{},available=[],other=[],owners=globalThis.PlannerDayEditor.owners(row,shift);
     for(const nurse of s.nurses) {
       if(owners.includes(nurse.id)||!D.isActive(nurse,day)) continue;
-      if(shiftFamily(row[nurse.id]?.shift)) {blocked.push(nurse.name+' · déjà en '+D.SHIFT_LABELS[row[nurse.id].shift]+'.');continue;}
+      const pick=chooseDuty(nurse.id,day,shift,nurse.name);
+      if(shiftFamily(row[nurse.id]?.shift)) {
+        other.push('<li>'+pick+' · occupe déjà le '+esc(D.SHIFT_LABELS[row[nurse.id].shift])+'. Son poste actuel sera libéré.</li>');
+        continue;
+      }
       try {
         globalThis.PlannerDayEditor.cell(s,day,nurse.id,shift);
-        available.push(nurse);
-      } catch(error) {blocked.push(nurse.name+' · '+error.message);}
+        available.push('<li>'+pick+'</li>');
+      } catch(error) {other.push('<li>'+pick+' · '+esc(error.message)+'</li>');}
     }
-    dialog.innerHTML='<h2 id="dialog-title">'+esc(D.SHIFT_LABELS[shift])+' du '+esc(shortDay(day))+'</h2><p>'+
-      (owners.length?'Déjà attribué à '+esc(owners.map(id=>s.nurses.find(n=>n.id===id)?.name||id).join(", "))+'.':'Poste à pourvoir.')+
-      (proposal?' Les choix concernent l’aperçu. Conservez-le pour modifier une affectation.':'')+'</p>'+
-      '<h3>IDE pouvant prendre ce poste</h3>'+(available.length?'<ul>'+available.map(n=>'<li>'+(proposal?esc(n.name):btn("prepare-duty",n.name,"mini",dataAtt("id",n.id)+' '+dataAtt("day",day)+' '+dataAtt("role",shift)))+'</li>').join("")+'</ul>':'<p>Aucune autre IDE disponible pour cette affectation individuelle.</p>')+
-      (blocked.length?'<details><summary>Voir les empêchements ('+blocked.length+')</summary><ul>'+blocked.map(t=>'<li>'+esc(t)+'</li>').join("")+'</ul></details>':'')+
+    dialog.innerHTML='<h2 id="dialog-title">'+esc(D.SHIFT_LABELS[shift])+' du '+esc(shortDay(day))+'</h2>'+manualContext(day)+'<p>'+
+      (owners.length?'Déjà attribué à '+esc(owners.map(nameOf).join(", "))+'.':'Poste à pourvoir.')+'</p>'+
+      '<h3>IDE pouvant prendre ce poste</h3>'+(available.length?'<ul>'+available.join("")+'</ul>':'<p>Aucune autre IDE disponible sans écart.</p>')+
+      (other.length?'<details><summary>Choisir une autre IDE manuellement ('+other.length+')</summary><ul>'+other.join("")+'</ul></details>':'')+
       '<div class="actions">'+btn("close","Fermer")+'</div>';
     if(!dialog.open)dialog.showModal();
   }
@@ -4460,11 +4557,7 @@
       return generateProposal(from,until,form.elements.mode.value==="replan",form.elements.night_relief.disabled?null:form.elements.night_relief.value||null,
         form.elements.restart_rotation.checked?E.nightRotationRestart(state,from,until)?.date:null,form.elements.prioritize_continuity.checked);
     }
-    if(form.dataset.form==="edit-day") {
-      const {candidate,changes}=dayEdits(form);
-      if(changes.length) save(candidate,"Journée du "+shortDay(form.dataset.day)+" enregistrée.");
-      dialog.close(); return;
-    }
+    if(["cell","edit-day"].includes(form.dataset.form)) return commitManualForm(form);
     if(form.dataset.form==="tiih-range") {addTiihRange(form); return;}
     if(form.dataset.form==="tiih-batch") {reviewTiihForm(form); return;}
     if(form.dataset.form==="team-management") {
@@ -4473,10 +4566,6 @@
     const f=new FormData(form), get=k=>String(f.get(k)??"");
     const candidate=clone(state);
     switch(form.dataset.form) {
-      case "cell": {
-        const change=cellEdits(form);
-        save(change.candidate,"Modification du planning enregistrée."); dialog.close(); break;
-      }
       case "team": {
         const effective=get("effective");
         candidate.nurses.forEach((n,i)=>{
@@ -4610,7 +4699,6 @@
         notify();
       } else {
         const noAddition=result.added===0 && Boolean(result.start && result.end) && ["unknown","infeasible"].includes(result.status);
-        if(noAddition) proposal=null;
         const known=!noAddition && !resumeFrom && !result.conflictDate && D.validateSchedule(original,...range(),false).find(i=>i.severity==="error" && i.day && i.nurse_id);
         generationFailure={resumeFrom,resumeUntil,replanUnlocked,nightRelief,restartNightRotation,prioritizeContinuity,noAddition,start:result.start,end:result.end,message:result.message,status:result.status,conflictDate:result.conflictDate,conflictCode:result.conflictCode,
           detail:known && !result.conflictDate?"Point à vérifier dans le planning enregistré. "+known.message:""};
@@ -4679,8 +4767,6 @@
       case "gap-options": await showGapOptions(button.dataset.nurse,button.dataset.from,button.dataset.until);break;
       case "duty-options": showDutyOptions(button.dataset.day,button.dataset.role);break;
       case "prepare-duty": showEditor(button.dataset.id,button.dataset.day,button.dataset.role);break;
-      case "check-rotation-start":
-        dialog.close();page="team";render();main.querySelector('[name=night_rotation_from]')?.focus();break;
       case "cell": showEditor(button.dataset.nurse,button.dataset.day); break;
       case "edit-day":
         showDayEditor(button.dataset.day||defaultDay());
@@ -4796,7 +4882,6 @@
         updateResumeSummary(t.form);
       }
       if(t.form?.dataset.form==="clear-month") syncClearPreview(t.form);
-      if(t.form?.dataset.form==="cell" && ["shift","locked","confirmed"].includes(t.name)) refreshCellChecks(t.form);
       if(t.form && !dialog.contains(t)) formEdited=true;
       if(t.form?.dataset.form==="absence" && ["from","nurse"].includes(t.name)) {
         const form=t.form;
@@ -4808,7 +4893,14 @@
       if(t.form?.dataset.form==="phase" && t.name==="mode") syncPhaseAge(t.form);
       if(t.id==="include-lookahead") includeLookahead=t.checked;
       if(t.id==="edit-day-date" && t.value && t.validity.valid) showDayEditor(t.value);
-      else if(t.form?.dataset.form==="edit-day" && t.id!=="edit-day-date") refreshDayEditor(t.form);
+      else if(t.form && ["cell","edit-day"].includes(t.form.dataset.form) && t.id!=="edit-day-date") {
+        if(t.name==="shift") {
+          const a=displayedPlan().assignments[t.form.dataset.day]?.[t.form.dataset.nurse];
+          t.form.elements.locked.checked=Boolean(a?.shift===t.value && a.locked);
+          t.form.elements.confirmed.checked=Boolean(a?.shift===t.value && a.confirmed);
+        }
+        refreshManualForm(t.form,t.name==="confirm_protected");
+      }
       if(t.id==="period"&&t.value) setPeriod(t.value);
       if(t.id==="individual-nurse") {selectedNurseId=t.value; render();}
       if(t.id==="effective"&&t.value) {
