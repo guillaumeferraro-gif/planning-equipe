@@ -30,10 +30,21 @@ L’onglet **Planning** du classeur présente une vue du planning enregistré. P
 - Le SMUR fonctionne chaque jour avec une IDE de **8 h à 20 h** et une IDE de **20 h à 8 h le lendemain**. Le TIIH fonctionne **le mardi, le jeudi et le vendredi**, hors jours fériés. Il commence à **9 h** et dure normalement **7 h 42**, soit une fin à **16 h 42**.
 - Deux plafonds s’appliquent au travail effectif de chaque IDE. Le maximum est de **48 h sur sept jours glissants** et de **44 h par semaine du lundi au dimanche**. Le repos minimum entre deux postes est de **12 h** selon les horaires affichés.
 - Après **trois dates consécutives de prise de poste**, les **deux jours suivants** sont obligatoirement sans nouvelle prise de poste. Une série du vendredi au dimanche impose donc le repos le lundi et le mardi. Le repos peut durer plus longtemps. Le générateur cherche aussi à éviter les journées et les nuits travaillées isolément.
-- Le week-end de nuit réunit les nuits de **vendredi, samedi et dimanche**. Le week-end de jour réunit **samedi et dimanche** et le générateur cherche à inclure le vendredi. Une IDE qui travaille le week-end bénéficie d’un repos de jour le lundi suivant.
+- Le week-end de jour réunit **samedi et dimanche** et le générateur cherche à inclure le vendredi. Une IDE qui travaille le week-end bénéficie d’un repos de jour le lundi suivant.
 - Une même IDE ne peut pas travailler **deux week-ends complets consécutifs**. Un week-end est complet si elle prend un poste le vendredi, le samedi **et** le dimanche. SMUR J, SMUR N et TIIH comptent, même si le poste change d’un jour à l’autre. Un samedi et un dimanche travaillés sans le vendredi ne forment pas un bloc complet. La règle suit le calendrier à travers les mois et les années. Par exemple, une IDE qui travaille les 25, 26 et 27 décembre 2026 ne peut pas aussi travailler les trois jours du 1ᵉʳ au 3 janvier 2027.
-- Une période de nuit dure **14 à 21 jours calendaires**, repos compris. Le générateur tient compte de l’historique pour répartir les gardes de jour et de nuit entre les IDE.
 - Une absence est créditée de **7 h 42** par jour du lundi au vendredi. Un créneau individuel peut avoir une durée différente.
+
+### Répartir les nuits SMUR
+
+Trois IDE distinctes assurent les sept nuits de chaque semaine civile. Une IDE prend les nuits de **lundi et mardi**, une deuxième celles de **mercredi et jeudi**, et une troisième celles de **vendredi, samedi et dimanche**. La date retenue est celle de la prise de poste à 20 h. Chaque série est attribuée en entier à une seule IDE.
+
+Sur **deux semaines civiles consécutives**, exactement **quatre IDE différentes** assurent les nuits. Par exemple, A, B et C peuvent assurer les trois séries de la première semaine, puis D, A et B celles de la suivante. La rotation est libre. Le calcul tient compte des affectations connues avant et après le mois, y compris au changement d’année. Si les disponibilités ou les gardes déjà fixées empêchent cette répartition, l’application signale le blocage et conserve le planning enregistré. Elle exige toujours trois titulaires dans la semaine et garde chaque série entière.
+
+Une période de nuit dure **14 à 21 jours calendaires**, repos compris. Après la dernière nuit de cette période, il faut **48 heures de repos** avant de reprendre un poste. Par exemple, si la dernière nuit démarre dimanche à 20 h et finit lundi à 8 h, la première reprise possible est mercredi à 8 h, sous réserve des autres règles. Les périodes de jour ont une durée libre. Une IDE peut par exemple rester 28 jours en période de jour, ou davantage.
+
+Pour équilibrer les nuits entre IDE, le générateur compte les **gardes SMUR N** déjà assurées dans l’historique et celles qu’il prépare. Chaque garde de 20 h à 8 h compte pour une nuit. Deux IDE qui ont assuré quatre nuits ont ainsi le même total de nuits, même si leur nombre de gardes de jour ou la durée de leurs périodes diffère. Les compteurs annuels permettent aussi de suivre les heures travaillées et l’OAT.
+
+Dans une proposition, ouvrez **Voir le roulement de nuit** pour retrouver les titulaires de chaque série et l’**IDE de relève**. En cas de blocage, **Consulter les règles de nuit** ouvre **Équipe et règles → Roulement de nuit**.
 
 ## Gérer une arrivée, un départ ou une quotité temporaire
 
