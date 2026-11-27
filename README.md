@@ -71,6 +71,14 @@ La durée du poste compte dans le temps de travail de l’IDE affectée. Le CSV 
 
 Dans **Planning**, cliquez sur **Modifier une journée** ou sur la date en tête de la grille d’équipe. Choisissez les IDE pour le SMUR J, le SMUR N et, si le poste est ouvert, le TIIH. Un poste ouvert sans titulaire apparaît comme **À pourvoir**. Pour conserver votre choix lors d’une prochaine génération, cochez **Verrouiller les cases modifiées pour les prochains calculs**. Cliquez sur **Enregistrer cette journée**. Cette correction porte uniquement sur les affectations de cette date. Pour modifier une seule case, cliquez directement sur celle de l’IDE concernée.
 
+## Compléter un planning déjà commencé
+
+Dans **Planning**, choisissez le mois puis **Compléter le planning existant**. Le **Premier jour à compléter** proposé est celui où il manque au moins un poste SMUR ou TIIH prévu. Une journée où seule la nuit est attribuée peut donc être complétée dès son poste de jour. Ajustez cette date si besoin. Par exemple, si le début du planning est déjà diffusé jusqu’au dimanche 3 janvier, choisissez le lundi 4 janvier pour poursuivre. Vous pouvez fixer un **Dernier jour à compléter** ou aller jusqu’à la fin du mois.
+
+Cliquez sur **Préparer la proposition**. Le calcul attribue les postes vacants de l’intervalle. Il conserve les gardes déjà saisies, même sans verrou, les repos verrouillés ou confirmés et toutes les dates en dehors de l’intervalle. Les gardes de décembre comptent pour vérifier les heures et les repos de janvier, ainsi que pour équilibrer les nuits entre IDE.
+
+La fenêtre indique à partir de quel lundi s’applique le roulement de nuit par blocs. Lors de la première reprise, il s’agit du premier lundi à partir de la date choisie. Examinez le résultat puis cliquez sur **Conserver la proposition** pour l’enregistrer.
+
 ## Refaire une proposition ou effacer un mois
 
 Pour recalculer un mois avec les règles actuelles, choisissez-le dans **Planning** et cliquez sur **Faire une autre proposition**. Ce bouton est disponible depuis un mois déjà planifié ou une proposition en cours. Pour un mois vierge, commencez par **Générer une proposition**. Vous pouvez examiner plusieurs répartitions avant de cliquer sur **Conserver la proposition**. Si le calcul ne trouve aucune répartition différente des gardes, le planning en place reste disponible. Si des week-ends consécutifs du mois voisin bloquent la génération, l’alerte indique les dates et propose d’ouvrir ce mois. Par défaut, l’enregistrement porte sur le mois affiché. Pour enregistrer aussi les affectations proposées après le dernier jour, cochez **Inclure l’anticipation après ce mois** avant le calcul.
