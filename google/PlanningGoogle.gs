@@ -1,8 +1,8 @@
 /** @OnlyCurrentDoc */
 /* Google Apps Script V8, lié au classeur. L’application publique est épinglée
    à une révision publiée. Les états et le journal restent dans ce classeur. */
-const PLANNING_COMMIT_ = '247ad0b24ada09454feb7722a47c6bc63847df8e';
-const PLANNING_HTML_SHA256_ = '78f376af2cc9093be60978f9538e0ae28946956df37bef0b47cd5b11e99eec6a';
+const PLANNING_COMMIT_ = '02940497e2a7e0a0e1aab4558e33751bf188f40b';
+const PLANNING_HTML_SHA256_ = 'a5bbd57c7beb7f29c8ab5da1b8c41201a4a3f812b721a1a4c9abbd923dee32c0';
 const PLANNING_SHEET_ = '_Planning_IDE_donnees_v1';
 const PLANNING_MARK_ = 'PLANNING_IDE_STORAGE_V1';
 const PLANNING_MAX_ = 16 * 1024 * 1024; // unités UTF-16 du document JSON
@@ -420,6 +420,9 @@ function planningValidateState_(input) {
     const s=state.settings;
     requireValue(s.rules_version===undefined || [1,2,3].includes(s.rules_version),
       "Cette sauvegarde utilise une version plus récente des règles.");
+    if (s.night_rotation_from!==undefined)
+      requireValue(s.rules_version===3 && weekday(s.night_rotation_from)===0,
+        "La date d’entrée en vigueur du roulement de nuit doit être un lundi.");
     requireValue(s.timezone==="Europe/Paris" && [null,"wall","elapsed"].includes(s.rest_clock) &&
       integer(s.phase_min,2,60) && integer(s.phase_target,s.phase_min,60) &&
       integer(s.phase_max,s.phase_target,60) && Array.isArray(s.extra_holidays),"Paramètres de planification invalides.");
