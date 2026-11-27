@@ -6,7 +6,7 @@
 
 1. Ouvrez le planning, puis cliquez sur **Essayer avec une équipe fictive**.
 2. Choisissez un mois et cliquez sur **Générer une proposition**.
-3. Examinez les gardes et les alertes, puis cliquez sur **Conserver la proposition** ou **Conserver le brouillon** selon le résultat. Un clic sur une case permet de modifier une affectation.
+3. Examinez les gardes et les alertes. Pour corriger une affectation, cliquez sur la case de l’IDE ou sur **Modifier une journée**. Lorsque le résultat vous convient, cliquez sur **Conserver la proposition** ou **Conserver le brouillon**.
 
 Pour utiliser le planning hors ligne, [ouvrez le fichier HTML sur GitHub](./Planning-IDE.html), cliquez sur **Download raw file** (flèche vers le bas), puis double-cliquez sur le fichier téléchargé. Le navigateur conserve les données sur cet appareil. Exportez une sauvegarde JSON avant de changer de poste ou de navigateur, ou de déplacer le fichier HTML.
 
@@ -80,9 +80,13 @@ La durée du poste compte dans le temps de travail de l’IDE affectée. Le CSV 
 
 ## Corriger les affectations d’une seule journée
 
-Dans **Planning**, cliquez sur **Modifier une journée** ou sur la date en tête de la grille d’équipe. Choisissez les IDE pour le SMUR J, le SMUR N et, si le poste est ouvert, le TIIH. Un poste ouvert sans titulaire apparaît comme **À pourvoir**. Pour conserver votre choix lors d’une prochaine génération, cochez **Verrouiller les cases modifiées pour les prochains calculs**. Cliquez sur **Enregistrer cette journée**. Cette correction porte uniquement sur les affectations de cette date. Pour modifier une seule case, cliquez directement sur celle de l’IDE concernée.
+Dans **Planning**, cliquez sur la case de l’IDE pour modifier une garde, ou sur la date en tête de la grille ou **Modifier une journée** pour choisir les titulaires des postes du jour. Ces commandes sont disponibles dans la proposition et dans le planning enregistré. Un SMUR laissé vacant apparaît comme **À pourvoir**. Pour ouvrir un poste TIIH fermé, modifiez d’abord la date concernée dans **TIIH**.
 
-Pour attribuer à une IDE un poste déjà occupé, ouvrez sa case, sélectionnez le poste, puis vérifiez les deux noms dans l’aperçu. Le bouton **Réattribuer** précise le poste et sa nouvelle titulaire. Lors de l’ajout manuel d’un SMUR J ou d’un TIIH, l’application peut corriger un repère automatique de nuit si cette période ne contient aucune garde de nuit ni aucun repère verrouillé. Les autres dates gardent leurs affectations. Si une contrainte empêche la modification, **Voir les IDE possibles pour…** permet de consulter les autres titulaires possibles pour ce poste.
+Pour attribuer à une IDE un poste déjà occupé, ouvrez sa case, sélectionnez le poste et vérifiez les deux noms affichés. Le changement porte sur cette journée. Pour conserver vos choix lors d’une prochaine génération, vous pouvez verrouiller les cases modifiées. Pour modifier une garde ou un repos déjà verrouillé ou confirmé, cochez la confirmation qui désigne les personnes concernées.
+
+Le calcul automatique applique les règles de l’équipe. En saisie manuelle, vous pouvez conserver une garde même en cas d’alerte sur une absence, un repos, un plafond horaire ou le roulement de nuit. L’absence reste inscrite dans **Absences** et les écarts restent consultables dans le planning. Dans une proposition, cliquez sur **Appliquer malgré les alertes**. Sur le planning déjà enregistré, cliquez sur **Enregistrer malgré les alertes**.
+
+Les retouches faites dans une proposition restent dans l’aperçu jusqu’à **Conserver la proposition** ou **Conserver le brouillon**. Si vous corrigez aussi une date hors de la période demandée, le bilan la signale avant l’enregistrement. **Écarter** abandonne la proposition et ses retouches.
 
 ## Compléter un planning déjà commencé
 
@@ -104,7 +108,7 @@ Consultez **Postes à pourvoir** pour repérer les dates et les horaires sans ti
 
 Dans **Périodes sans garde inscrite**, repérez les IDE qui cumulent **sept dates consécutives ou plus sans garde**. Le décompte traverse les fins de mois lorsque les journées sont renseignées. Une absence, une date hors effectif ou un repos verrouillé ou confirmé interrompt la série. Le détail précise les dates et signale les cases individuelles inconnues ou les repos prévus par le roulement de nuit. Les périodes figurent aussi à la fin du PDF.
 
-Cliquez sur **Chercher un poste** à côté de la période. La recherche affiche les **Postes à pourvoir**, puis les **Réaffectations possibles** avec le nom de l’IDE qui céderait sa garde. Elle écarte une réaffectation qui créerait ou prolongerait une telle période sans garde pour cette IDE. Sur le planning enregistré, cliquez sur un poste pour examiner le changement avant de le valider. Dans une proposition, conservez d’abord le brouillon ou la proposition pour pouvoir modifier la garde. Si aucun poste ne convient, ouvrez **Voir les empêchements rencontrés**.
+Cliquez sur **Chercher un poste** à côté de la période. La recherche affiche les **Postes à pourvoir**, puis les **Réaffectations possibles** avec le nom de l’IDE qui céderait sa garde. Elle écarte une réaffectation qui créerait ou prolongerait une telle période sans garde pour cette IDE. Cliquez sur un poste pour examiner le changement avant de le valider. Si aucun poste ne convient, ouvrez **Voir les empêchements rencontrés** ou choisissez directement une garde dans le planning.
 
 Pour reprendre le travail plus tard ou le partager avec l’équipe, cliquez sur **Conserver le brouillon**. Depuis le planning enregistré, ouvrez la journée concernée avec **Modifier**. La liste se met à jour après la correction. Dans l’onglet **Planning** du classeur, les postes vacants d’un mois entamé portent la mention **À pourvoir**. Le PDF d’équipe indique les postes vacants sous les dates correspondantes et détaille les conflits à examiner. Le CSV mensuel garde son format de réimportation.
 
