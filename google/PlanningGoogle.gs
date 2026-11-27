@@ -1,8 +1,8 @@
 /** @OnlyCurrentDoc */
 /* Google Apps Script V8, lié au classeur. L’application publique est épinglée
    à une révision publiée. Les états et le journal restent dans ce classeur. */
-const PLANNING_COMMIT_ = '02940497e2a7e0a0e1aab4558e33751bf188f40b';
-const PLANNING_HTML_SHA256_ = 'a5bbd57c7beb7f29c8ab5da1b8c41201a4a3f812b721a1a4c9abbd923dee32c0';
+const PLANNING_COMMIT_ = '07249cafc52d8255bc39480c6b188113084c09c8';
+const PLANNING_HTML_SHA256_ = '778cdda8c7e0790594b2306a93596848258c57129fd7444b686f82fd5a965b06';
 const PLANNING_SHEET_ = '_Planning_IDE_donnees_v1';
 const PLANNING_MARK_ = 'PLANNING_IDE_STORAGE_V1';
 const PLANNING_MAX_ = 16 * 1024 * 1024; // unités UTF-16 du document JSON
@@ -516,6 +516,7 @@ function refreshPlanningView_(spreadsheet, body, revision) {
   const namesRange = sheet.getRange(2, 2, rows.length, 3);
   namesRange.setNumberFormat("@");
   namesRange.setRichTextValues(rows.map(r => r.names.map(textCell)));
+  namesRange.setBackgrounds(rows.map(r => r.attention.map(flag => flag ? "#f8e5de" : "#ffffff")));
   sheet.getRange(2, 1, rows.length, 1).setNumberFormat("ddd dd/mm/yyyy");
   sheet.getRange(2, 5, rows.length, 1).setNumberFormat("hh:mm");
   sheet.getRange(2, 6, rows.length, 1).setNumberFormat("dd/mm/yyyy hh:mm");
@@ -581,6 +582,7 @@ function planningReadableRows_(state, fallbackMonth) {
   const historic = state.tiih_history_durations || {};
   const movedTo = new Map();
   const months = new Set(), holidayYears = new Map();
+  const startedMonths = new Set();
   const extraHolidays = new Set((state.settings && state.settings.extra_holidays) || []);
   const people = new Map(state.nurses.map(n => [n.id, n.name]));
   const own = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
@@ -590,6 +592,9 @@ function planningReadableRows_(state, fallbackMonth) {
   }
   [assignments, reviews, state.phases || {}, moves, durations, historic].forEach(table =>
     Object.keys(table).forEach(includeDay));
+  for (const table of [assignments, reviews, state.phases || {}])
+    for (const [day, entries] of Object.entries(table))
+      if (Object.keys(entries).length) startedMonths.add(day.slice(0, 7));
   for (const [from, to] of Object.entries(moves)) {
     if (to) { movedTo.set(to, from); includeDay(to); }
   }
@@ -609,8 +614,7 @@ function planningReadableRows_(state, fallbackMonth) {
       const row = assignments[day] || {};
       for (const [id, item] of Object.entries(row))
         if (item && own(duty, item.shift)) duty[item.shift].push({name: people.get(id) || id, confirmed: item.confirmed});
-      const known = Object.keys(row).length > 0 || (reviews[day] || []).length > 0;
-      const missing = known ? "À pourvoir" : "Non renseigné";
+      const missing = startedMonths.has(month) ? "À pourvoir" : "Non renseigné";
       const hasTiih = duty.T.length > 0, relevant = Boolean(source) || hasTiih;
       const serial = date.getTime() / 86400000 + 25569;
       let minutes = 462;
@@ -633,7 +637,9 @@ function planningReadableRows_(state, fallbackMonth) {
       const start = serial + 9 / 24;
       const names = ["J", "N", "T"].map(code => duty[code].map(a => a.name).join(", ") ||
         (code === "T" && !relevant ? "—" : missing));
-      rows.push({date: serial, names: names, begin: relevant ? start : "",
+      const attention = ["J", "N", "T"].map(code => startedMonths.has(month) &&
+        duty[code].length !== (code === "T" && !source ? 0 : 1));
+      rows.push({date: serial, names: names, attention: attention, begin: relevant ? start : "",
         finish: relevant ? start + minutes / 1440 : "", duration: relevant ? minutes / 1440 : "",
         status: status.join(" · "), closedDay: holiday || weekday === 0 || weekday === 6});
     }
