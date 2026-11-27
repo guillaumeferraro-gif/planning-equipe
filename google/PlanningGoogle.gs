@@ -1,8 +1,8 @@
 /** @OnlyCurrentDoc */
 /* Google Apps Script V8, lié au classeur. L’application publique est épinglée
    à une révision publiée. Les états et le journal restent dans ce classeur. */
-const PLANNING_COMMIT_ = '07249cafc52d8255bc39480c6b188113084c09c8';
-const PLANNING_HTML_SHA256_ = '778cdda8c7e0790594b2306a93596848258c57129fd7444b686f82fd5a965b06';
+const PLANNING_COMMIT_ = '353a92cc7ce9d83541d75079b6f9511aad4e65d8';
+const PLANNING_HTML_SHA256_ = '8138bf09efdcb5e9b50071ad093cbc5ef3a5d338a3b7cbb04c58d8ff07b742ce';
 const PLANNING_SHEET_ = '_Planning_IDE_donnees_v1';
 const PLANNING_MARK_ = 'PLANNING_IDE_STORAGE_V1';
 const PLANNING_MAX_ = 16 * 1024 * 1024; // unités UTF-16 du document JSON
@@ -302,7 +302,7 @@ function planningValidateState_(input) {
     return Array.from({length: Math.max(0, last - first + 1)}, (_, i) => isoDay(first + i));
   }
   function phaseBounds(settings,mode) {
-    if (mode==="J" && settings.rules_version===3) return {min:1,max:Infinity};
+    if (mode==="J" && settings.rules_version>=3) return {min:1,max:Infinity};
     if (mode==="N" || settings.rules_version!==2)
       return {min:settings.phase_min,target:settings.phase_target,max:settings.phase_max};
     return {min:settings.day_phase_min??14,target:settings.day_phase_target??15,max:settings.day_phase_max??16};
@@ -418,17 +418,27 @@ function planningValidateState_(input) {
       }
     }
     const s=state.settings;
-    requireValue(s.rules_version===undefined || [1,2,3].includes(s.rules_version),
+    requireValue(s.rules_version===undefined || [1,2,3,4,5].includes(s.rules_version),
       "Cette sauvegarde utilise une version plus récente des règles.");
-    if (s.night_rotation_from!==undefined)
-      requireValue(s.rules_version===3 && weekday(s.night_rotation_from)===0,
+    if (s.night_rotation_from!==undefined && !(s.rules_version>=4 && s.night_rotation_from===null))
+      requireValue(s.rules_version>=3 && weekday(s.night_rotation_from)===0,
         "La date d’entrée en vigueur du roulement de nuit doit être un lundi.");
+    if (s.night_relief!==undefined)
+      requireValue(s.rules_version===5 && ["three","two"].includes(s.night_relief),"Mode de relève de nuit invalide.");
+    if (s.night_relief_periods!==undefined) {
+      requireValue(s.rules_version===5 && plain(s.night_relief_periods),"Choix de roulement par quinzaine invalides.");
+      for (const [start,mode] of Object.entries(s.night_relief_periods)) {
+        requireValue(s.night_rotation_from!==null && (!s.night_rotation_from || start>=s.night_rotation_from) &&
+          (serial(start)-serial(s.night_rotation_from??"2027-01-04"))%14===0 && ["three","two"].includes(mode),
+          "Chaque choix de roulement doit correspondre au premier lundi d’une quinzaine active.");
+      }
+    }
     requireValue(s.timezone==="Europe/Paris" && [null,"wall","elapsed"].includes(s.rest_clock) &&
       integer(s.phase_min,2,60) && integer(s.phase_target,s.phase_min,60) &&
       integer(s.phase_max,s.phase_target,60) && Array.isArray(s.extra_holidays),"Paramètres de planification invalides.");
     if (s.rules_version>=2) requireValue(s.phase_min>=14 && s.phase_max<=21,
       "Les périodes de nuit doivent rester comprises entre 14 et 21 jours.");
-    if (s.rules_version!==3) {
+    if ((s.rules_version??1)<3) {
       const dayPhase=phaseBounds(s,"J");
       requireValue(integer(dayPhase.min,2,60) && integer(dayPhase.target,dayPhase.min,60) &&
         integer(dayPhase.max,dayPhase.target,60),"Paramètres de période de jour invalides.");
@@ -448,7 +458,7 @@ function planningValidateState_(input) {
       requireValue(plain(row),"Périodes jour/nuit invalides.");
       for (const [nid,p] of Object.entries(row))
         requireValue(ids.has(nid) && plain(p) && ["J","N"].includes(p.mode) &&
-          integer(p.age,1,s.rules_version===3 && p.mode==="J"?Number.MAX_SAFE_INTEGER:60),
+          integer(p.age,1,s.rules_version>=3 && p.mode==="J"?Number.MAX_SAFE_INTEGER:60),
           "Période jour/nuit invalide.");
     }
     for (const [d,reviewed] of Object.entries(state.reviewed)) {
