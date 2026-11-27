@@ -1,8 +1,8 @@
 /** @OnlyCurrentDoc */
 /* Google Apps Script V8, lié au classeur. L’application publique est épinglée
    à une révision publiée. Les états et le journal restent dans ce classeur. */
-const PLANNING_COMMIT_ = '508737a7a1f585f251064c67ab901b03a470a459';
-const PLANNING_HTML_SHA256_ = 'dcb5f82c3c0a6f45fae1a858d588a3566cc135d13b9c125f488725ed4f2d1b52';
+const PLANNING_COMMIT_ = '541e0423094c4ee25b5c505c46d89c193216a908';
+const PLANNING_HTML_SHA256_ = 'cf5190521e06654e32f8174c21f64214e6a8d30d7624100bf147a7e91e201252';
 const PLANNING_SHEET_ = '_Planning_IDE_donnees_v1';
 const PLANNING_MARK_ = 'PLANNING_IDE_STORAGE_V1';
 const PLANNING_MAX_ = 16 * 1024 * 1024; // unités UTF-16 du document JSON
