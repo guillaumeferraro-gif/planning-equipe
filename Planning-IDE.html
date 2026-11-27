@@ -29,6 +29,14 @@
 .day-preview{font-size:.88rem}.day-preview ul{margin:.4rem 0;padding-left:1.3rem}
 @media print{.generation-scope{display:none}}
 .month-controls{display:flex;align-items:center;justify-content:space-between;gap:.6rem;flex-wrap:wrap;margin:.5rem 0 1rem}.month-controls .generation-scope{margin:0}.month-controls .generation-scope small{margin-left:.5rem}.search-failure{background:#fcf0e9;border-color:#e7cdc1}.search-failure p{margin-top:.35rem}.clear-options{margin:.9rem 0;border:1px solid var(--line);border-radius:7px;padding:.65rem}.clear-options label{display:block;margin:.25rem 0}.clear-table{font-size:.88rem}.clear-table td{text-align:center}.clear-table th,.clear-table td{padding:.35rem .45rem}.month-issues{max-height:45vh}dialog:has(.clear-table){max-width:550px}
+.proposal.proposal-partial{background:#fbf3e4;border-color:#d9bd87;color:#513d19}
+.coverage-report .panelhead>strong{font-variant-numeric:tabular-nums}
+.coverage-list{border-top:1px solid var(--line);padding:.6rem 0}.coverage-list summary{font-weight:650}
+.coverage-list .scroll,.coverage-conflicts{max-height:18rem;overflow:auto;margin-top:.55rem}
+.coverage-list table{width:100%;font-size:.9rem}.coverage-list th,.coverage-list td{text-align:left;padding:.42rem .5rem}
+.coverage-conflicts{margin-bottom:0;padding-left:1.3rem}.coverage-conflicts li+li{margin-top:.45rem}
+.coverage-conflicts li button{margin-inline-start:.6rem}.grid-vacancies td,.grid-vacancies th{color:#65460f;background:#fcf3e1}
+.grid-vacancies td{font-weight:650}.grid-vacancies button{padding:.2rem .1rem;background:transparent;border-color:transparent;font-size:inherit;color:inherit}
 </style>
 </head>
 <body>
@@ -944,7 +952,7 @@
     return issues;
   }
 
-  function validateSchedule(state,start,end,coverage=true,{continuation=false}={}) {
+  function validateSchedule(state,start,end,coverage=true,{continuation=false,partial=false}={}) {
     const issues=[];
     function issue(code,message,day=null,nid=null,severity="error") {
       issues.push({code,message,severity,day,nurse_id:nid});
@@ -1044,27 +1052,48 @@
       for (const {begin,finish} of work)
         for (const t of [begin,finish,begin-weekMinutes,finish-weekMinutes]) boundaries.add(t);
       let worst=0,when=null;
-      for (const t of boundaries) {
+      function reportPeak() {
+        if (worst<=2880) return;
+        const d=localParts(when).day;
+        report("weekly",formatMinutes(worst)+" de travail sur 168 h à partir du "+d+" (maximum 48 h).",d);
+        worst=0;
+      }
+      // A draft lists each separate breach. Contiguous overlapping windows
+      // above 48 hours are represented by their largest excess.
+      for (const t of partial?[...boundaries].sort((a,b)=>a-b):boundaries) {
         if (!overlap(t,t+weekMinutes,scopeStart,impactedEnd)) continue;
         // The sliding total is continuous. A peak exactly where the first new
         // minute enters a window is also approached in windows with new work.
         if (resumedWork && !resumedWork.some(w=>w.begin<=t+weekMinutes && w.finish>=t)) continue;
         const total=work.reduce((sum,w)=>sum+Math.max(0,Math.min(t+weekMinutes,w.finish)-Math.max(t,w.begin)),0);
+        if (partial && total<=2880) reportPeak();
         if (total>worst) { worst=total; when=t; }
       }
-      if (worst>2880) {
-        const d=localParts(when).day;
-        report("weekly",formatMinutes(worst)+" de travail sur 168 h à partir du "+d+" (maximum 48 h).",d);
-      }
+      reportPeak();
       for (const fri of dates(addDays(start,-3),end)) {
         if (weekday(fri)!==4) continue;
         const sat=addDays(fri,1),sun=addDays(fri,2),mon=addDays(fri,3);
         const known=d=>(d>=start && d<=end) || state.reviewed[d]?.includes(nid) ||
           Object.hasOwn(state.assignments[d]||{},nid);
-        if (sat<=end && sun>=start && known(sat)&&known(sun)&&byDay.get(sat)!==byDay.get(sun))
+        // In an unfinished roster an empty duty can still complete the pair.
+        // Only an existing assignment, a protected rest or unavailability
+        // establishes that the other date is incompatible with this owner.
+        const prevents=(d,shift)=>{
+          if (!shift) return false;
+          const cell=state.assignments[d]?.[nid];
+          if (cell?.shift===shift) return false;
+          if (!partial) return known(d);
+          return Boolean(byDay.get(d) || cell?.locked || cell?.confirmed || !isActive(nurse,d) ||
+            absentFor(state,nid,d,shift) || (shift==="T" && !tiihRequired(state,d)) ||
+            Object.entries(state.assignments[d]??{}).some(([id,a])=>id!==nid && a.shift===shift));
+        };
+        const satShift=byDay.get(sat),sunShift=byDay.get(sun);
+        const splitWeekend=partial ? ((satShift!=="N" && prevents(sun,satShift)) ||
+            (sunShift!=="N" && prevents(sat,sunShift))) : known(sat)&&known(sun)&&satShift!==sunShift;
+        if (sat<=end && sun>=start && splitWeekend)
           report("weekend","samedi "+sat+" et dimanche doivent être travaillés ensemble au même poste.",sat);
         const nightBlock=[fri,sat,sun];
-        if (sun>=start && nightBlock.some(d=>byDay.get(d)==="N") && nightBlock.some(d=>known(d)&&byDay.get(d)!=="N"))
+        if (sun>=start && nightBlock.some(d=>byDay.get(d)==="N") && nightBlock.some(d=>prevents(d,"N")))
           report("weekend_night","les trois nuits du vendredi "+fri+" au dimanche "+sun+
             " doivent être confiées à la même IDE.",fri);
         if (byDay.has(sun) && ["J","T"].includes(byDay.get(mon)))
@@ -1091,6 +1120,93 @@
       if (missing) issue("phase_history",name+" · historique des périodes jour/nuit incomplet.",null,nid,"warning");
     }
     return issues;
+  }
+
+  // Derive coverage from the saved assignments so holes remain visible after
+  // a reload, a manual edit, or an import. A duty with an attendance conflict
+  // is reported as assigned with a conflict, not as an additional vacant duty.
+  function planningCoverage(state,start,end) {
+    requireValue(start<=end,"La fin du planning doit suivre son début.");
+    const vacancies=[],conflicts=[];
+    let totalRequired=0,covered=0;
+    for (const day of dates(start,end)) {
+      const row=state.assignments[day]??{},active=state.nurses.filter(n=>isActive(n,day));
+      for (const shift of shifts) {
+        const owners=active.filter(n=>row[n.id]?.shift===shift);
+        const required=shift!=="T" || tiihRequired(state,day), label=SHIFT_LABELS[shift];
+        if (required) {
+          totalRequired++;
+          if (owners.length) covered++;
+        }
+        if (required && !owners.length) {
+          let reason=null;
+          const free=active.filter(n=>{
+            const a=row[n.id];
+            return !(a && (a.shift!=="-" || a.locked || a.confirmed));
+          });
+          if (!active.length) reason="Aucune IDE dans l’effectif à cette date.";
+          else if (!free.length) reason="Toutes les IDE présentes dans l’effectif ont déjà un poste ou un repos protégé à cette date.";
+          else if (free.every(n=>absentFor(state,n.id,day,shift)))
+            reason="Les IDE sans autre poste ni repos protégé sont toutes en absence pendant cette garde.";
+          vacancies.push({day,shift,code:"vacancy",severity:"error",reason,nurse_id:null,
+            message:day+" · "+label+" à pourvoir."+(reason?" "+reason:"")});
+        } else if (owners.length && (!required || owners.length>1)) {
+          const names=owners.map(n=>n.name).join(", ");
+          conflicts.push({day,shift,code:required?"duplicate_duty":"closed_duty",severity:"error",nurse_id:null,
+            message:day+" · "+label+(required?" attribué à plusieurs IDE : ":" fermé mais attribué à ")+names+"."});
+        }
+      }
+    }
+    return {vacancies,conflicts,totalRequired,covered};
+  }
+  function planningVacancies(state,start,end) {
+    return planningCoverage(state,start,end).vacancies;
+  }
+  function weeklyCapacityNotes(state,start,end,vacancies) {
+    const notes=[],activation=nightRotationStart(state);
+    const mondays=new Set(vacancies.filter(v=>v.shift!=="T").map(v=>addDays(v.day,-weekday(v.day))));
+    for (const day of mondays) {
+      const sunday=addDays(day,6);
+      if (day<start || sunday>end || (activation && day<activation)) continue;
+      const week=dates(day,sunday),dayLimits=[];
+      let nightNurses=0;
+      for (const n of state.nurses) {
+        const activeDays=week.filter(d=>isActive(n,d));
+        const dayCount=activeDays.filter(d=>!absentFor(state,n.id,d,"J")).length;
+        const canWorkNight=activeDays.some(d=>!absentFor(state,n.id,d,"N"));
+        if (canWorkNight) nightNurses++;
+        // Four complete SMUR day shifts are 48 hours inside one calendar week.
+        if (dayCount || canWorkNight) dayLimits.push(Math.min(3,dayCount));
+      }
+      const prefix="Du "+day+" au "+sunday+" · ";
+      if (nightNurses<3) {
+        notes.push({day,end:sunday,message:prefix+"seulement "+nightNurses+
+          " IDE disponible"+(nightNurses===1?"":"s")+" pour au moins une garde de nuit. "+
+          "Le roulement des sept nuits exige trois IDE distinctes."});
+        continue;
+      }
+      // Ignore all current duty choices and reserve the three least productive
+      // potential day workers for nights, even if those three cannot do nights.
+      // The resulting optimistic ceiling remains valid after a reassignment.
+      const dayNurses=dayLimits.length-3;
+      dayLimits.sort((a,b)=>b-a);
+      const capacity=dayLimits.slice(0,dayNurses).reduce((sum,n)=>sum+n,0);
+      if (capacity<7) notes.push({day,end:sunday,message:prefix+dayLimits.length+
+        " IDE disponibles pour au moins une garde SMUR. Si les sept nuits sont couvertes par trois IDE, "+
+        "il reste au plus "+dayNurses+" IDE pour les jours. Avec les disponibilités et le plafond de 44 h, "+
+        "au maximum "+capacity+" garde"+(capacity===1?"":"s")+" SMUR J sur sept "+
+        (capacity===1?"peut être assurée":"peuvent être assurées")+" cette semaine."});
+    }
+    return notes;
+  }
+  function planningProblems(state,start,end,{continuation=false}={}) {
+    const result=planningCoverage(state,start,end), warnings=[];
+    for (const issue of validateSchedule(state,start,end,false,{partial:true,continuation})) {
+      (issue.severity==="error"?result.conflicts:warnings).push(issue);
+    }
+    result.conflicts.sort((a,b)=>(a.day??"").localeCompare(b.day??""));
+    const capacityNotes=weeklyCapacityNotes(state,start,end,result.vacancies);
+    return {...result,warnings,capacityNotes};
   }
   function legacyShift(label, file, day) {
     requireValue(typeof label==="string","Poste illisible dans "+file+", jour "+day+".");
@@ -1210,7 +1326,7 @@
   }
   globalThis.PlannerDomain=Object.freeze({SHIFT_MINUTES,SHIFT_LABELS,ABSENCE_KINDS,dates,addDays,weekday,
     monthBounds,previewClearMonth,applyClearMonth,formatMinutes,parseDuration,newState,quotaOn,setContract,isHoliday,defaultTiih,tiihRequired,
-    changeTiih,previewTiihBatch,applyTiihBatch,shiftInterval,absentFor,absenceOn,setAbsence,creditMinutes,validateState,annualTotals,validateSchedule,
+    changeTiih,previewTiihBatch,applyTiihBatch,shiftInterval,absentFor,absenceOn,setAbsence,creditMinutes,validateState,annualTotals,validateSchedule,planningProblems,planningVacancies,
     fullWeekendPairAt,newConsecutiveFullWeekends,nightRecoveryRequired,newNightExitRestConflicts,newNightRotationConflicts,nightRotationStart,
     importLegacyFiles,calendarWeekBounds,migrateState,phaseBounds,tiihSource,tiihDay,
     getTiihDuration,setTiihDuration,shiftMinutes,tiihWallEnd,isActive,activeOn:isActive,baseQuotaOn,
@@ -1410,7 +1526,7 @@
     }
   }
 
-  function prepare(state, year, month, D, includeLookahead, resumeFrom, resumeUntil, reopen=new Set()) {
+  function prepare(state, year, month, D, includeLookahead, resumeFrom, resumeUntil, reopen=new Set(), partial=false) {
     D.validateState(state);
     if (!Number.isInteger(year) || year < 1900 || year > 2200 ||
         !Number.isInteger(month) || month < 1 || month > 12)
@@ -1438,9 +1554,9 @@
     const monthEnd=days.indexOf(end);
     for (const day of days.slice(priorDays,endIndex+1)) {
       const active=state.nurses.filter(n=>D.isActive(n,day)).length;
-      if (!active) return {impossible:"Aucune IDE dans l’effectif le "+day+" pour couvrir les deux postes SMUR obligatoires."};
+      if (!partial && !active) return {impossible:"Aucune IDE dans l’effectif le "+day+" pour couvrir les deux postes SMUR obligatoires."};
       const required=D.tiihRequired(state,day)?3:2;
-      if (active<required) return {impossible:"Effectif insuffisant le "+day+" : "+active+" IDE pour "+required+" postes."};
+      if (!partial && active<required) return {impossible:"Effectif insuffisant le "+day+" : "+active+" IDE pour "+required+" postes."};
     }
     const shiftIntervals = days.map(day => Object.fromEntries(shifts.map(shift => [
       shift, D.shiftInterval(day, shift, "elapsed", state)
@@ -1477,8 +1593,8 @@
       days.forEach((day, i) => {
         const old = state.assignments[day]?.[nurse.id];
         const reviewed = state.reviewed[day]?.includes(nurse.id);
-        editable[i] = active[i] && day >= start && day <= horizon && !old?.locked && !old?.confirmed && !(resumeFrom && shifts.includes(old?.shift)) &&
-          (day <= end || reopen.has(i) || (!reviewed && !old));
+        editable[i] = active[i] && day >= start && day <= horizon && !old?.locked && !old?.confirmed && !((resumeFrom || partial) && shifts.includes(old?.shift)) &&
+          (partial || day <= end || reopen.has(i) || (!reviewed && !old));
         known[i] = active[i] && (editable[i] || reviewed || Boolean(old));
         const phase = state.phases[day]?.[nurse.id];
         savedPhase[i]=active[i] && phase && day>=start && day<=end ? (phase.mode==="N"?phase.age:-phase.age) : null;
@@ -1503,6 +1619,12 @@
     if (weekdays[endIndex]===4 || weekdays[endIndex]===5) boundaryWeekends.push(endIndex-weekdays[endIndex]+4);
     const timing = {shiftIntervals, restIntervals, calendarWeeks, weekdays, boundaryWeekends,rotationStart,
       fullWeekendPairAt:D.fullWeekendPairAt,nightRecoveryRequired:D.nightRecoveryRequired};
+    if(partial) {
+      const context={days,start,end,horizon,endIndex,monthEnd,nurses,needed,shiftMinutes,...timing,
+        includeLookahead,firstMonday:priorDays-weekdays[priorDays],lastMonday:endIndex-weekdays[endIndex]};
+      setWorkTargets(state,D,context);
+      return context;
+    }
     const repairDates=new Set();
     for (let i=monthEnd+1; i<=endIndex; i++) {
       const day=days[i], row=state.assignments[day] || {};
@@ -1681,8 +1803,8 @@
         const capacity=dayCapacity.reduce((a,b)=>a+b,0)-cost[7];
         if(Number.isFinite(capacity) && capacity<7)
           return {repairDates,conflictCode:"day_capacity",conflictDate:days[monday],impossible:
-            "Du "+days[monday]+" au "+days[monday+6]+", trois IDE doivent assurer les blocs de nuit. "+
-            "Avec les disponibilités et le plafond de 44 h, l’équipe peut couvrir au maximum "+capacity+
+            "Du "+days[monday]+" au "+days[monday+6]+", si les sept nuits sont couvertes par le trio, "+
+            "les disponibilités et le plafond de 44 h permettent de couvrir au maximum "+capacity+
             " des 7 postes SMUR J, même sans TIIH. Une relève supplémentaire ou un changement de disponibilité est nécessaire."};
       }
       if (options.every(group=>group.length) && !distinctOwners(options))
@@ -2115,6 +2237,216 @@
     return {candidate,isolated,isolatedDays,score,nextShortfall,changedAssignments};
   }
 
+  // Keep all existing duties on a partial proposal. Only an accepted proposal
+  // persists additions; an unfilled position is represented by no assignment.
+  function partialProposal(state,year,month,D,options,failure,random,deadline,references) {
+    const {forecast,resumeFrom,resumeUntil}=options;
+    let ctx;
+    try {ctx=prepare(state,year,month,D,forecast,resumeFrom,resumeUntil,new Set(),true);}
+    catch (_) {return failure;}
+    if (!ctx?.nurses) return failure;
+    const {nurses,days,weekdays,endIndex}=ctx;
+    const baseline=D.planningProblems(state,ctx.start,ctx.horizon,{continuation:Boolean(resumeFrom)});
+    const unchanged={...failure,start:ctx.start,end:ctx.horizon,added:0,vacancies:baseline.vacancies,
+      issues:baseline.conflicts,warnings:baseline.warnings,totalRequired:baseline.totalRequired,covered:baseline.covered};
+    if(!baseline.vacancies.length) return unchanged;
+    const present=new Set(baseline.conflicts.map(i=>[i.code,i.day,i.nurse_id,i.message].join("|")));
+    const occupied=nurses.map(n=>n.work.slice());
+    const fixed=days.map((_,i)=>Object.fromEntries(shifts.map(c=>[c,nurses.filter(n=>n.work[i]===c)])));
+    const bounds={J:D.phaseBounds(state.settings,"J"),N:D.phaseBounds(state.settings,"N")};
+    const refs=references.map(ref=>referenceGrid(ctx,ref));
+    const slots=[];
+    for(let i=priorDays;i<=endIndex;i++) for(const code of shifts) {
+      if(code==="T" && !ctx.needed[i]) continue;
+      const w=weekdays[i],mon=i-w;
+      const [a,b]=code==="N" && mon>=ctx.rotationStart?nightBlocks[nightBlock(w)]:
+        code==="N" && w>=4?[4,6]:w>=5?[5,6]:[w,w];
+      if(i!==Math.max(priorDays,mon+a)) continue;
+      const positions=Array.from({length:b-a+1},(_,k)=>mon+a+k);
+      if(code==="T" && positions.some(j=>!ctx.needed[j])) continue;
+      const alternatives=new Set(positions.flatMap(j=>fixed[j][code]));
+      if(alternatives.size>1) continue;
+      const open=positions.filter(j=>j>=priorDays && j<=endIndex && !fixed[j][code].length);
+      if(!open.length) continue;
+      const candidates=nurses.filter(n=>(!alternatives.size || alternatives.has(n)) &&
+        positions.every(j=>n.available[j][code] && (!n.oldPhase[j] || (n.oldPhase[j]>0)===(code==="N")) &&
+        (n.work[j]===code || (!n.work[j] && (n.editable[j] || ((j<priorDays || j>endIndex) && !n.known[j]))))));
+      if(candidates.length) slots.push({mon,i,code,positions,open,candidates});
+    }
+    if(!slots.length) return unchanged;
+    const totalSmur=baseline.vacancies.filter(v=>v.shift!=="T").length;
+    const nurseIndex=new Map(nurses.map((n,i)=>[n,i]));
+    let best=null,bestScore=-Infinity,nightGuide=null,nightGuideScore=-Infinity;
+    for(let pass=0;pass<1500 && (pass===0 || now()<deadline);pass++) {
+      const order=nurses.filter(n=>n.active.slice(priorDays,endIndex+1).some(Boolean));
+      for(const [k,n] of nurses.entries()) {
+        n.work=occupied[k].slice();
+        n.phases=null;
+        n.nightCount=n.historicNights+n.work.slice(priorDays,ctx.monthEnd+1).filter(c=>c==="N").length;
+      }
+      seedRotation(ctx,order,bounds,random);
+      const preferences=nurses.map(n=>{
+        const offset=Math.floor(random()*6);
+        return i=>{
+          const p=n.profile;
+          if(!p || pass%3===2) return -1;
+          const pos=cycleDay(p.first+i,p.slot,p.period);
+          return pos<21?pos+1:-(pos-20+offset);
+        };
+      });
+      const path=n=>unboundedDayTrajectory(n,days,bounds,preferences[nurseIndex.get(n)],false);
+      for(const n of order) n.phases=path(n);
+      let count=0,smur=0;
+      const guide=pass%3===2?best?.candidate:pass%3===1?nightGuide:null;
+      const sequence=slots.map(slot=>{
+        let priority=slot.i+random()*(pass%3===2?10:4);
+        if(pass%4===0 && slot.code!=="N") priority-=slot.positions.length*50;
+        if(pass%5===1 && slot.code!=="N") priority=slot.candidates.length+random()*4;
+        return {slot,priority};
+      });
+      sequence.sort((a,b)=>{
+        const rank=s=>s.code==="N"?0:(pass%3===1 || s.code==="J"?1:2);
+        return rank(a.slot)-rank(b.slot) || a.priority-b.priority;
+      });
+      function place(slot,accept) {
+        const {code,mon,positions,open}=slot;
+        const ranked=[];
+        for(const n of slot.candidates) {
+          if(!n.phases || positions.some(j=>n.work[j] && n.work[j]!==code)) continue;
+          let cost=random()*7;
+          if(code==="N") {
+            const profile=n.profile;
+            if(guide?.assignments[days[slot.open[0]]]?.[n.id]?.shift==="N" && random()>0.15) cost-=13;
+            if(profile && templateNight(cycleDay(profile.first+slot.i,profile.slot,profile.period))) cost-=pass%5===0?100:6;
+            // Keep nurses with the most daytime availability out of nights when
+            // two otherwise equivalent candidates can cover an entire block.
+            cost+=n.nightCount*0.22;
+            for(let j=mon;j<mon+7;j++) if(n.available[j].J) cost+=0.7;
+            if(positions.at(-1)<mon+4 && mon+13<=endIndex) {
+              const canReturn=nightBlocks.some(([a,b])=>{
+                for(let j=mon+7+a;j<=mon+7+b;j++) if(!n.available[j].N || n.oldPhase[j]<0 ||
+                  (fixed[j].N.length && !fixed[j].N.includes(n))) return false;
+                return true;
+              });
+              if(!canReturn) cost+=24;
+            }
+            if(n.work.slice(Math.max(0,mon-7),mon).includes("N")) cost-=2;
+          } else {
+            if(positions.some(j=>n.phases[j]>0)) cost+=5;
+            if(n.work[slot.i-1]==="J" || n.work[positions.at(-1)+1]==="J") cost-=2;
+            if(weekdays[slot.i]===4 && n.available[slot.i+1]?.J && n.available[slot.i+2]?.J) cost-=1;
+          }
+          ranked.push({n,cost});
+        }
+        ranked.sort((a,b)=>a.cost-b.cost);
+        for(const {n} of ranked) {
+          const changed=positions.filter(j=>!n.work[j]);
+          for(const j of changed) n.work[j]=code;
+          const previous=n.phases;
+          let next=previous;
+          if(positions.some(j=>(next[j]>0)!==(code==="N"))) next=path(n);
+          n.phases=next;
+          const viable=next && positions.every(j=>legalDay(ctx,n,j)) &&
+            (code!=="N" || [mon-7,mon].every(m=>{
+              if(m<ctx.rotationStart) return true;
+              if(!fortnightFits(nurses,m,ctx.rotationStart)) return false;
+              const retained=nurses.filter(member=>member.work.slice(Math.max(0,m),m+4).includes("N"));
+              return new Set([...retained,...nightOwners(nurses,m+7)]).size<=3;
+            }));
+          if(viable) {
+            const added=open.length;
+            count+=added;
+            if(code!=="T") smur+=added;
+            if(code==="N") n.nightCount+=added;
+            if(!accept || accept()) return true;
+            count-=added;
+            if(code!=="T") smur-=added;
+            if(code==="N") n.nightCount-=added;
+          }
+          n.phases=previous;
+          for(const j of changed) n.work[j]=null;
+        }
+        return false;
+      }
+      // Explore complete night rotations first. If a block cannot be covered
+      // even by handover, the bounded fallback keeps trying all later blocks.
+      const nights=sequence.filter(s=>s.slot.code==="N").map(s=>s.slot);
+      let visits=0;
+      const placeNights=k=>k===nights.length || (++visits<=65 &&
+        place(nights[k],()=>placeNights(k+1)));
+      const completeNights=pass%3!==2 && placeNights(0);
+      if(!completeNights) for(const slot of nights) place(slot);
+      // For each week try alternative day owners and explicitly allow leaving
+      // a position open. A missed SMUR on Tuesday must not stop the Friday or
+      // next week's search. Save the best combination of J, then TIIH.
+      for(let monday=ctx.firstMonday;monday<=ctx.lastMonday;monday+=7) {
+        const daytime=sequence.map(s=>s.slot).filter(s=>s.mon===monday && s.code!=="N");
+        const remaining=Array(daytime.length+1).fill(0);
+        const weight=s=>s.open.length*(s.code==="J"?1001:1);
+        for(let k=daytime.length-1;k>=0;k--) remaining[k]=remaining[k+1]+weight(daytime[k]);
+        let nodes=0,weekBest=null,weekScore=-1;
+        function fill(k,value) {
+          if(value+remaining[k]<=weekScore) return false;
+          if(k===daytime.length) {
+            weekScore=value;
+            weekBest={smur,count,rows:nurses.map(n=>n.work.slice()),phases:nurses.map(n=>n.phases)};
+            return value===remaining[0];
+          }
+          if(++nodes>110 && weekBest) return false;
+          const slot=daytime[k];
+          return place(slot,()=>fill(k+1,value+weight(slot))) || fill(k+1,value);
+        }
+        fill(0,0);
+        if(weekBest) {
+          count=weekBest.count;
+          smur=weekBest.smur;
+          nurses.forEach((n,k)=>{n.work=weekBest.rows[k];n.phases=weekBest.phases[k];});
+        }
+      }
+      if(!count || refs.some(ref=>!differentDutyCells(ref,nurses.map(n=>n.work),ctx.monthEnd,true))) continue;
+      const nightValues=order.map(n=>n.nightCount);
+      const spread=nightValues.length?Math.max(...nightValues)-Math.min(...nightValues):0;
+      const score=smur*1000000+count*1000-Math.min(999,spread);
+      const nightCovered=order.reduce((sum,n)=>sum+n.work.slice(priorDays,endIndex+1).filter(code=>code==="N").length,0);
+      const nightQuality=nightCovered*1e9+score;
+      if(score<=bestScore && nightQuality<=nightGuideScore) continue;
+      const candidate=JSON.parse(JSON.stringify(state));
+      for(let j=priorDays;j<=endIndex;j++) for(const [id,n] of nurses.entries()) {
+        const date=days[j],code=n.work[j];
+        if(!code || occupied[id][j] || !n.editable[j]) continue;
+        (candidate.assignments[date]??={})[n.id]={shift:code,confirmed:false,locked:false};
+        const reviewed=candidate.reviewed[date]??=[];
+        if(!reviewed.includes(n.id)) reviewed.push(n.id);
+      }
+      for(const n of order) {
+        if(!n.phases || !n.work.some((c,j)=>j>=priorDays && j<=endIndex && c && !occupied[nurseIndex.get(n)][j])) continue;
+        for(let j=priorDays;j<=endIndex;j++) if(n.active[j] && !n.oldPhase[j]) {
+          const phase=n.phases[j];
+          (candidate.phases[days[j]]??={})[n.id]={mode:phase>0?"N":"J",age:Math.abs(phase),locked:false};
+        }
+      }
+      const checked=D.planningProblems(candidate,ctx.start,ctx.horizon,{continuation:Boolean(resumeFrom)});
+      if(checked.conflicts.some(i=>!present.has([i.code,i.day,i.nurse_id,i.message].join("|")))) continue;
+      const added=baseline.vacancies.length-checked.vacancies.length;
+      if(!added) continue;
+      if(nightQuality>nightGuideScore) {nightGuide=candidate;nightGuideScore=nightQuality;}
+      if(score<=bestScore) continue;
+      const status=checked.vacancies.length||checked.conflicts.length?"partial":"feasible";
+      const message=status==="partial" ? "Proposition partielle du "+ctx.start+" au "+ctx.horizon+". "+failure.message :
+        "Proposition contrôlée du "+ctx.start+" au "+ctx.horizon+".";
+      best={...result(status,message,candidate,ctx.horizon),start:ctx.start,added,
+        vacancies:checked.vacancies,issues:checked.conflicts,warnings:checked.warnings,
+        totalRequired:checked.totalRequired,covered:checked.covered,
+        conflictCode:failure.conflictCode??null,conflictDate:failure.conflictDate??null,
+        resumeFrom:resumeFrom?ctx.start:null,nightRotationFrom:state.settings.night_rotation_from??null,
+        changedAssignments:refs.length?differentDutyCells(refs[0],nurses.map(n=>n.work),ctx.monthEnd):0,
+        nightPattern:summarizeNights(candidate,ctx)};
+      bestScore=score;
+      if(smur===totalSmur && added===baseline.vacancies.length) break;
+    }
+    return best||unchanged;
+  }
+
   function generate(state, year, month, {timeLimitMs=1800, seed=Date.now(), includeLookahead=false,differentFrom=[],resumeFrom=null,resumeUntil=null}={}) {
     const D=globalThis.PlannerDomain;
     if(state?.settings?.rules_version!==3) {
@@ -2137,12 +2469,14 @@
     try { ctx=prepare(state,year,month,D,forecast,resumeFrom,resumeUntil); }
     catch(e) {return result("invalid_input",String(e.message||e));}
     const random=randomGenerator(seed);
+    const fallback=failure=>partialProposal(state,year,month,D,{forecast,resumeFrom,resumeUntil},failure,random,
+      now()+Math.max(400,Math.min(3000,Number(timeLimitMs)||1800)),references);
     let best=null, repaired=false;
     for(let stage=0;stage<=1;stage++) {
       const retry=stage===0 && ctx.repairDates?.size;
       const stop=retry?now()+(deadline-now())*0.4:deadline;
-      if (ctx.impossible && !retry) return {...result("infeasible",ctx.impossible),
-        conflictDate:ctx.conflictDate||null,conflictCode:ctx.conflictCode||null};
+      if (ctx.impossible && !retry) return fallback({...result("infeasible",ctx.impossible),
+        conflictDate:ctx.conflictDate||null,conflictCode:ctx.conflictCode||null});
       if (!ctx.impossible) {
         ctx.references=references.map(ref=>referenceGrid(ctx,ref));
         if (forcedIdenticalMonth(ctx)) return result("no_alternative",
@@ -2163,9 +2497,9 @@
       ctx=prepare(state,year,month,D,forecast,resumeFrom,resumeUntil,ctx.repairDates);
       repaired=true;
     }
-    if (!best) return result("unknown",references.length ?
+    if (!best) return fallback(result("unknown",references.length ?
       "Aucune répartition différente compatible avec la trame de nuit et les postes de jour n’a été trouvée dans le temps de recherche. Vérifiez les indisponibilités et les postes conservés aux limites du mois." :
-      "Aucune proposition compatible avec la rotation de quatre IDE sur deux semaines et la couverture de jour n’a été trouvée dans le temps de recherche. Vérifiez les absences, les postes protégés et les périodes de nuit aux limites du mois.");
+      "Aucune proposition compatible avec la rotation de quatre IDE sur deux semaines et la couverture de jour n’a été trouvée dans le temps de recherche. Vérifiez les absences, les postes protégés et les périodes de nuit aux limites du mois."));
     let message=resumeFrom?"Planning complété du "+ctx.start+" au "+ctx.end+". Les gardes déjà saisies sont conservées.":
       "Proposition contrôlée du "+ctx.start+" au "+ctx.end+".";
     if (forecast) message="Proposition contrôlée, avec anticipation jusqu’au "+ctx.horizon+".";
@@ -2697,7 +3031,9 @@
   function header(p,job,individual=false,annex=false) {
     const right=p.w-margin;
     p.text("PLANNING IDE   /   SMUR · TIIH",margin,31,8.5,{bold:true,color:colors.teal});
-    const status=(job.demo?"Équipe fictive   ·   ":"")+(job.proposal?"Proposition à valider":"Planning enregistré");
+    const stateLabel=job.unresolved ? (job.proposal?"Proposition partielle":"Brouillon à compléter") :
+      (job.proposal?"Proposition à valider":"Planning enregistré");
+    const status=(job.demo?"Équipe fictive   ·   ":"")+stateLabel;
     p.text(status,right,31,8.8,{align:"right",bold:true,color:colors.teal});
     const title=annex?"Nom complet de l’IDE":individual?(job.nameAnnex?"Planning individuel":job.person.name):job.monthName;
     const lines=wrap(p.pdf,title,right-margin-2,24,true);
@@ -2705,6 +3041,14 @@
     for(const line of lines){p.text(line,margin,y,24,{bold:true});y+=27;}
     const subtitle=individual?(job.nameAnnex?job.monthName+(annex?"":"   /   Nom complet en fin de document"):"Planning individuel   /   "+job.monthName):"Planning d’équipe   /   "+job.roster.length+" IDE";
     p.text(subtitle,margin,y-10,10,{color:colors.muted});
+    if(job.unresolved) {
+      const {vacancies,conflicts,totalRequired,covered}=job.problems;
+      const details=[covered+" / "+totalRequired+" postes attribués dans l’équipe"];
+      if(vacancies.length) details.push(vacancies.length+" à pourvoir");
+      if(conflicts.length) details.push(conflicts.length+" conflit"+(conflicts.length>1?"s":"")+" à examiner");
+      p.text(details.join("   ·   "),margin,y+5,9,{bold:true,color:colors.teal});
+      y+=16;
+    }
     return y+7;
   }
   function footer(p,job,index,total) {
@@ -2742,6 +3086,11 @@
       row.lines.forEach((t,i)=>p.text(t,x+7,y+(row.h-row.lines.length*10.6)/2+8+i*10.6,8.8,{bold:true}));
       y+=row.h;p.line(x,y,x+w,y);
     }
+    if(dates.some(d=>job.openByDay.has(d))) {
+      p.rect(x,y,w,18,colors.A);p.text("Postes à pourvoir",x+7,y+12,8.8,{bold:true});
+      dates.forEach((d,i)=>p.text((job.openByDay.get(d)||[]).join(" "),x+nameW+(i+.5)*cw,y+12,8.6,{bold:true,align:"center"}));
+      y+=18;
+    }
     if(custom.size){
       p.rect(x,y,w,24,colors.light);p.text("TIIH modifié · début 09:00",x+7,y+10,7.8,{bold:true,color:colors.teal});
       p.text("Heure de fin / durée du poste",x+7,y+20,7.1,{color:colors.muted});
@@ -2758,7 +3107,6 @@
     const pages=[];let p,y,top;
     function next(){p=new Page(pdf,LANDSCAPE);pages.push(p);top=y=header(p,job);}
     next();
-    if(!job.roster.length){p.text("Aucune IDE dans l’effectif ce mois-ci.",margin,y+26,12);return pages;}
     const rows=job.roster.flatMap(n=>{
       const lines=wrap(pdf,n.name,148,8.8,true);
       const parts=[];
@@ -2774,7 +3122,8 @@
         if(!D.tiihRequired(job.state,d)&&!job.roster.some(n=>codeAt(job.state,n,d)==="T"))continue;
         const t=tiih(job.state,d);if(t.minutes!==D.SHIFT_MINUTES.T)custom.set(d,t);
       }
-      const fixed=39+(custom.size?24:0), bottom=p.h-85;
+      const fixed=39+(custom.size?24:0)+(dates.some(d=>job.openByDay.has(d))?18:0), bottom=p.h-85;
+      if(!rows.length){y=drawHalf(p,job,dates,[],y,custom)+15;continue;}
       if(y>top && y+fixed+rows.reduce((sum,r)=>sum+r.h,0)>bottom) next();
       let i=0;
       while(i<rows.length) {
@@ -2822,16 +3171,53 @@
     }
     return pages;
   }
+  function conflictPages(pdf,job) {
+    const conflicts=job.problems.conflicts.filter(i=>!job.person || i.nurse_id===job.person.id);
+    const notes=job.person?[]:(job.problems.capacityNotes||[]);
+    if(!conflicts.length && !notes.length) return [];
+    const pages=[];
+    let page,y,heading;
+    function next() {
+      page=new Page(pdf,job.person?PORTRAIT:LANDSCAPE);pages.push(page);
+      y=header(page,job,Boolean(job.person))+10;
+      page.text(heading,margin,y,13,{bold:true});y+=22;
+    }
+    for(const [title,items] of [["Disponibilités de la semaine",notes],["Conflits à examiner",conflicts]]) {
+      if(!items.length) continue;
+      heading=title;
+      if(!page || y>page.h-88) next();
+      else {page.text(heading,margin,y+5,13,{bold:true});y+=27;}
+      for(const issue of items) {
+        const message=job.person && issue.code==="night_rotation" ?
+          "Roulement de nuit à vérifier pour le "+dayFmt.format(utc(issue.day))+"." : issue.message;
+        for(const line of wrap(pdf,message,page.w-2*margin,9.5)) {
+          if(y>page.h-53) next();
+          page.text(line,margin,y,9.5);y+=13;
+        }
+        y+=6;
+      }
+    }
+    return pages;
+  }
   function exportMonth({state,year,month,nurseId=null,proposal=false,demo=false}) {
     const days=D.dates(...D.monthBounds(year,month));
     const roster=state.nurses.filter(n=>days.some(d=>D.isActive(n,d)));
     const person=nurseId===null?null:roster.find(n=>n.id===nurseId);
     if(nurseId!==null && !person) throw Error("Cette IDE est hors effectif pendant tout le mois demandé.");
     const monthName=capital(monthFmt.format(utc(days[0])));
-    const job={state,days,roster,person,proposal,demo,monthName,
+    const problems=D.planningProblems(state,days[0],days.at(-1));
+    const openByDay=new Map();
+    for(const {day,shift} of problems.vacancies) {
+      if(!openByDay.has(day)) openByDay.set(day,[]);
+      openByDay.get(day).push(shift);
+    }
+    const job={state,days,roster,person,proposal,demo,monthName,problems,openByDay,
+      unresolved:Boolean(problems.vacancies.length||problems.conflicts.length),
       monthOnly:new Intl.DateTimeFormat("fr-FR",{month:"long",timeZone:"UTC"}).format(utc(days[0])),stamp:stampFmt.format(new Date())};
     const pdf=new PdfFile(), pages=person?individualPages(pdf,job):teamPages(pdf,job);
-    pages.forEach((p,i)=>{if(!person)teamLegend(p);footer(p,job,i,pages.length);});
+    if(!person) pages.forEach(teamLegend);
+    pages.push(...conflictPages(pdf,job));
+    pages.forEach((p,i)=>footer(p,job,i,pages.length));
     const who=person?clean(person.name).replace(/[^\p{L}\p{N}]+/gu,"-").replace(/^-|-$/g,"").slice(0,60)||"ide":"equipe";
     return {blob:pdf.blob(pages),filename:"planning-"+days[0].slice(0,7)+"-"+who+(proposal?"-proposition":"")+(demo?"-essai":"")+".pdf"};
   }
@@ -3102,7 +3488,7 @@
     const f=generationFailure;
     const adjacent=/^\d{4}-\d{2}-\d{2}$/.test(f.conflictDate||"") && !f.conflictDate.startsWith(period);
     const night=f.conflictCode==="night_pattern" || f.conflictCode==="night_recovery";
-    const heading=f.conflictCode==="night_pattern"?"Roulement de nuit bloqué":f.conflictCode==="night_recovery"?"Repos de 48 h après la période de nuit":f.status==="no_alternative"?"Aucune autre répartition possible":"La recherche n’a pas produit de proposition";
+    const heading=f.noAddition?"Aucun poste supplémentaire n’a pu être attribué":f.conflictCode==="night_pattern"?"Roulement de nuit bloqué":f.conflictCode==="night_recovery"?"Repos de 48 h après la période de nuit":f.status==="no_alternative"?"Aucune autre répartition possible":"La recherche n’a pas produit de proposition";
     const sameMonth=f.conflictDate && f.conflictDate.startsWith(period);
     return '<aside class="notice search-failure" role="alert"><div><strong>'+heading+'</strong><p>'+esc(f.message)+'</p>'+
       (f.detail?'<p>'+esc(f.detail)+'</p>':'')+(proposal?'<p>La proposition affichée reste disponible.</p>':'')+'</div><div class="actions">'+
@@ -3110,6 +3496,34 @@
       (night?btn("night-rules","Consulter les règles de nuit"):"")+
       (f.resumeFrom && sameMonth && !proposal?btn("edit-day","Examiner le "+shortDay(f.conflictDate),"",dataAtt("day",f.conflictDate)):"")+
       (adjacent?btn("conflict-month","Voir "+monthText(f.conflictDate.slice(0,7)),"",dataAtt("month",f.conflictDate.slice(0,7))):"")+'</div></aside>';
+  }
+  function coverageView(s,start,end,problems,{preview=false,requested=false,empty=false}={}) {
+    const {vacancies,conflicts,totalRequired,covered,capacityNotes=[]}=problems;
+    const heading=preview?"Couverture de la période proposée":requested?"Couverture de la période demandée":"Couverture de "+monthText(period);
+    const label=preview||requested?"Du "+shortDay(start)+" au "+shortDay(end):"Équipe entière";
+    const summary=covered+" / "+totalRequired+" postes affectés";
+    const canEdit=day=>!preview && day && day.startsWith(period);
+    const edit=(day,role)=>canEdit(day)?btn("edit-day","Modifier","mini",dataAtt("day",day)+
+      (role?' '+dataAtt("role",role):'')+' aria-label="'+esc("Modifier "+(role?D.SHIFT_LABELS[role]+" ":"la journée ")+"du "+shortDay(day))+'"'):"";
+    let html='<section class="panel coverage-report" aria-labelledby="coverage-title"><div class="panelhead"><div><h2 id="coverage-title">'+esc(heading)+'</h2>'+
+      '<p class="subtle">'+esc(label)+'</p></div><strong>'+esc(summary)+'</strong></div>';
+    if(capacityNotes.length) html+='<div class="coverage-list"><h3>Effectif disponible par semaine</h3><ul>'+
+      capacityNotes.map(n=>'<li>'+esc(n.message)+'</li>').join("")+'</ul></div>';
+    if(vacancies.length) {
+      const hasReasons=vacancies.some(v=>v.reason);
+      const caption=vacancies.length+' poste'+(vacancies.length>1?'s':'')+' à pourvoir';
+      html+='<details class="coverage-list"'+(empty?'':' open')+'><summary>'+esc(caption)+'</summary>'+
+        '<div class="scroll" role="region" aria-label="Postes à pourvoir" tabindex="0"><table><thead><tr><th scope="col">Date</th><th scope="col">Poste</th><th scope="col">Horaire</th>'+
+        (hasReasons?'<th scope="col">Motif établi</th>':'')+(preview?'':'<th scope="col">Action</th>')+'</tr></thead><tbody>'+
+        vacancies.map(v=>'<tr><th scope="row">'+esc(shortDay(v.day))+'</th><td>'+esc(D.SHIFT_LABELS[v.shift])+'</td>'+
+          '<td>'+esc(shiftHours(s,v.day,v.shift))+'</td>'+(hasReasons?'<td>'+esc(v.reason||"")+'</td>':'')+
+          (preview?'':'<td>'+edit(v.day,v.shift)+'</td>')+'</tr>').join("")+'</tbody></table></div></details>';
+    }
+    if(conflicts.length) {
+      html+='<details class="coverage-list" open><summary>'+conflicts.length+' conflit'+(conflicts.length>1?'s':'')+' à examiner</summary>'+
+        '<ul class="coverage-conflicts">'+conflicts.map(c=>'<li><span>'+esc(c.message)+'</span>'+edit(c.day)+'</li>').join("")+'</ul></details>';
+    }
+    return html+'</section>';
   }
   function showMonthChecks() {
     const issues=D.validateSchedule(state,...range()).filter(i=>i.severity==="error");
@@ -3202,7 +3616,11 @@
   }
   function planningView() {
     const [start,end]=range(), all=days(), s=proposal?.candidate||state;
-    const issueList=D.validateSchedule(s,start,end);
+    const partial=proposal?.status==="partial";
+    const attempted=generationFailure?.noAddition?generationFailure:null;
+    const scopeStart=proposal?.start||proposal?.resumeFrom||attempted?.start||start, scopeEnd=proposal?.end||attempted?.end||end;
+    const checkState=attempted?.resumeFrom?{...s,settings:{...s.settings,night_rotation_from:D.nightRotationStart(s,attempted.resumeFrom)}}:s;
+    const problems=D.planningProblems(checkState,scopeStart,scopeEnd,{continuation:Boolean(proposal?.resumeFrom||attempted?.resumeFrom)});
     const monthName=dateFmt(start,{month:"long",year:"numeric"});
     const roster=rosterDuring(s,all);
     const missing=roster.filter(n=>all.some(day=>D.isActive(n,day) && D.quotaOn(n,day)==null)).length;
@@ -3228,27 +3646,31 @@
     if(proposal) {
       const changed=proposal.changedAssignments;
       const diff=changed>0?'<p><strong>'+changed+' case'+(changed>1?'s d’affectation modifiées':' d’affectation modifiée')+'</strong> par rapport '+(proposal.afterPreview?'à la proposition précédente.':'au planning enregistré.')+'</p>':'';
-      const summary=proposal.resumeFrom?"Complément du "+shortDay(proposal.resumeFrom)+" au "+shortDay(proposal.resumeUntil):"Proposition à examiner";
-      out+='<aside class="proposal"><div><strong>'+esc(summary)+'</strong><p>'+esc(proposal.message)+'</p>'+diff+'<small>'+(proposal.end && !proposal.resumeFrom?'Affectations proposées jusqu’au '+esc(shortDay(proposal.end)):'')+'</small></div><div class="actions">'+btn("accept","Conserver la proposition","primary")+btn("discard","Écarter")+'</div></aside>';
-      out+=nightRotationView(proposal);
+      const summary=partial?"Proposition partielle":proposal.resumeFrom?"Complément du "+shortDay(proposal.resumeFrom)+" au "+shortDay(proposal.resumeUntil):"Proposition à examiner";
+      out+='<aside class="proposal'+(partial?' proposal-partial':'')+'"><div><strong>'+esc(summary)+'</strong><p>'+esc(proposal.message)+'</p>'+diff+
+        '<small>'+(proposal.end && !proposal.resumeFrom && !partial?'Affectations proposées jusqu’au '+esc(shortDay(proposal.end)):'')+'</small></div><div class="actions">'+
+        btn("accept",partial?"Conserver le brouillon":"Conserver la proposition","primary")+btn("discard","Écarter")+'</div></aside>';
     }
+    if(partial || attempted || problems.conflicts.length || problems.vacancies.length)
+      out+=coverageView(s,scopeStart,scopeEnd,problems,{preview:Boolean(proposal),requested:Boolean(attempted),empty:!proposal&&!attempted&&!savedMonth});
+    if(proposal) out+=nightRotationView(proposal);
     if(planningMode==="team") out+='<div class="metricgrid">'+["J","N","T"].map(code=>{
       const need=all.filter(d=>code!=="T"||D.tiihRequired(s,d));
-      const covered=need.filter(d=>Object.values(s.assignments[d]||{}).filter(a=>a.shift===code).length===1).length;
-      return '<div class="metric"><span class="swatch '+code+'">'+code+'</span><div><div class="rolelabel">'+D.SHIFT_LABELS[code]+'</div><small>'+({J:"08 h – 20 h",N:"20 h – 08 h",T:"09 h · 7 h 42 par défaut"})[code]+'</small></div><span class="value" title="Postes couverts sur postes requis">'+covered+' <small>/ '+need.length+'</small></span></div>';
+      const covered=need.filter(d=>roster.some(n=>D.isActive(n,d) && s.assignments[d]?.[n.id]?.shift===code)).length;
+      return '<div class="metric"><span class="swatch '+code+'">'+code+'</span><div><div class="rolelabel">'+D.SHIFT_LABELS[code]+'</div><small>'+({J:"08 h – 20 h",N:"20 h – 08 h",T:"09 h · 7 h 42 par défaut"})[code]+'</small></div><span class="value" title="Postes affectés sur postes requis dans le mois">'+covered+' <small>/ '+need.length+'</small></span></div>';
     }).join("")+'</div>';
     const person=roster.find(n=>n.id===selectedNurseId)??roster[0];
     if(person) selectedNurseId=person.id;
     const individual=planningMode==="individual";
-    out+='<section class="panel"><div class="panelhead"><div><h2>'+(proposal?"Planning proposé":"Planning enregistré")+'</h2><p class="subtle">'+(proposal?"Consultez les postes avant de conserver la proposition.":"Sélectionnez un poste ou une journée pour modifier l’affectation.")+'</p></div>'+
+    out+='<section class="panel"><div class="panelhead"><div><h2>'+(partial?"Planning proposé · brouillon":proposal?"Planning proposé":savedMonth?"Planning enregistré":"Planning à remplir")+'</h2><p class="subtle">'+(proposal?"Consultez les postes avant de conserver la proposition.":"Sélectionnez un poste ou une journée pour modifier l’affectation.")+'</p></div>'+
       '<div class="actions"><div class="weekbar viewbar" role="group" aria-label="Vue du planning">'+btn("planning-mode","Équipe","",dataAtt("mode","team")+' aria-pressed="'+!individual+'"')+btn("planning-mode","Par IDE","",dataAtt("mode","individual")+' aria-pressed="'+individual+'"')+'</div>'+
       btn("export-pdf","Exporter en PDF","",person?'title="'+esc(individual?"Planning de "+person.name:"Planning de toute l’équipe")+'"':"disabled")+'</div></div>';
-    if(person) out+=individual?individualAgenda(s,person,all,roster):teamGrid(s,all,roster);
+    if(person) out+=individual?individualAgenda(s,person,all,roster):teamGrid(s,all,roster,problems.vacancies);
     else out+='<div class="notice"><p>Aucune IDE dans l’effectif ce mois-ci.</p>'+btn("page","Gérer les agents","",dataAtt("page","team"))+'</div>';
-    const members=new Set(roster.map(n=>n.id));
-    const visibleIssues=individual?issueList.filter(i=>person && i.nurse_id===person.id):issueList.filter(i=>!i.nurse_id || members.has(i.nurse_id));
-    const errors=visibleIssues.filter(i=>i.severity==="error"), warnings=visibleIssues.filter(i=>i.severity!=="error");
-    out+='<details class="validation"><summary>'+(proposal?.resumeFrom?"Mois entier · ":"")+errors.length+' conflit(s) · '+warnings.length+' point(s) de contexte</summary><ul>'+visibleIssues.map(i=>'<li class="'+(i.severity==="error"?"issueerror":"")+'">'+esc(i.message)+'</li>').join("")+'</ul></details></section>';
+    const warnings=problems.warnings.filter(i=>!individual||!i.nurse_id||i.nurse_id===person?.id);
+    if(warnings.length) out+='<details class="validation"><summary>'+warnings.length+' point'+(warnings.length>1?'s':'')+' de contexte</summary><ul>'+
+      warnings.map(i=>'<li>'+esc(i.message)+'</li>').join("")+'</ul></details>';
+    out+='</section>';
     if(!individual && proposal?.end>end) {
       const future=D.dates(D.addDays(end,1),proposal.end);
       out+='<details class="panel"><summary>Voir l’anticipation jusqu’au '+esc(shortDay(proposal.end))+'</summary><div class="scroll"><table><thead><tr><th>Date</th><th>SMUR J</th><th>SMUR N</th><th>TIIH</th></tr></thead><tbody>'+future.map(d=>'<tr><th>'+esc(shortDay(d))+'</th>'+["J","N","T"].map(c=>'<td>'+esc(s.nurses.filter(n=>s.assignments[d]?.[n.id]?.shift===c).map(n=>n.name).join(", ")||"—")+'</td>').join("")+'</tr>').join("")+'</tbody></table></div></details>';
@@ -3270,7 +3692,7 @@
     if(code==="N") return "20 h – 8 h le lendemain";
     return code==="T"?tiihHours(day,D.shiftMinutes(s,day,code)):"";
   }
-  function teamGrid(s,all,roster) {
+  function teamGrid(s,all,roster,vacancies) {
     const pageCount=Math.ceil(all.length/7);
     week=Math.max(-1,Math.min(pageCount-1,week));
     const full=week===-1, shown=full?all:all.slice(week*7,week*7+7);
@@ -3290,9 +3712,23 @@
       const tag=esc(n.name+", "+shortDay(day)+", "+label+(slot?", "+slot:""));
       return '<td class="'+(D.weekday(day)>4?"weekend":"")+'">'+btn("cell",mark,classes,dataAtt("nurse",n.id)+' '+dataAtt("day",day)+' aria-label="'+tag+'" title="'+tag+'"'+(proposal || code==="X"?" disabled":""))+'</td>';
     }).join("")+'</tr>').join("");
+    const openByDay=new Map();
+    for(const v of vacancies) {
+      if(!openByDay.has(v.day)) openByDay.set(v.day,[]);
+      openByDay.get(v.day).push(v.shift);
+    }
+    const openRow=shown.some(day=>openByDay.has(day))?'<tr class="grid-vacancies"><th scope="row">À pourvoir</th>'+
+      shown.map(day=>{
+        const shifts=openByDay.get(day);
+        if(!shifts) return '<td></td>';
+        const label=shifts.join(' · '), description=shortDay(day)+' · '+shifts.map(c=>D.SHIFT_LABELS[c]).join(', ')+' à pourvoir';
+        const value=proposal?'<span title="'+esc(description)+'">'+esc(label)+'</span>':
+          btn("edit-day",label,"",dataAtt("day",day)+' '+dataAtt("role",shifts[0])+' aria-label="'+esc(description)+'"');
+        return '<td>'+value+'</td>';
+      }).join("")+'</tr>':'';
     const adjusted=shown.filter(day=>D.tiihRequired(s,day) && D.shiftMinutes(s,day,"T")!==D.SHIFT_MINUTES.T);
     const times=adjusted.length?'<p class="tiih-adjusted"><strong>Horaires TIIH modifiés</strong> · '+adjusted.map(day=>esc(shortDay(day))+' ('+tiihHours(day,D.shiftMinutes(s,day,"T"))+')').join(' · ')+'</p>':"";
-    return '<div class="weekbar date-range" role="group" aria-label="Jours du mois">'+pages.join("")+'</div><div class="scroll"><table class="grid'+(full?" full-grid":"")+'"><thead><tr><th scope="col">IDE</th>'+headings+'</tr></thead><tbody>'+rows+'</tbody></table></div><div class="legend"><span><b class="J"></b>J · SMUR jour</span><span><b class="N"></b>N · SMUR nuit</span><span><b class="T"></b>T · TIIH</span><span><b class="A"></b>A · Absence</span><span>— Repos</span><span>? Non renseigné</span><span>× Hors effectif</span><span>• Poste protégé</span></div>'+times;
+    return '<div class="weekbar date-range" role="group" aria-label="Jours du mois">'+pages.join("")+'</div><div class="scroll"><table class="grid'+(full?" full-grid":"")+'"><thead><tr><th scope="col">IDE</th>'+headings+'</tr></thead><tbody>'+rows+openRow+'</tbody></table></div><div class="legend"><span><b class="J"></b>J · SMUR jour</span><span><b class="N"></b>N · SMUR nuit</span><span><b class="T"></b>T · TIIH</span><span><b class="A"></b>A · Absence</span><span>— Repos</span><span>? Non renseigné</span><span>× Hors effectif</span><span>• Poste protégé</span></div>'+times;
   }
   function individualAgenda(s,person,all,roster) {
     const count={J:0,N:0,T:0};
@@ -3851,8 +4287,10 @@
         proposal={...result,resumeFrom,resumeUntil,afterPreview:Boolean(oldProposal)}; generationFailure=null; week=-1;
         notify();
       } else {
-        const known=!resumeFrom && !result.conflictDate && D.validateSchedule(original,...range(),false).find(i=>i.severity==="error" && i.day && i.nurse_id);
-        generationFailure={resumeFrom,resumeUntil,message:result.message,status:result.status,conflictDate:result.conflictDate,conflictCode:result.conflictCode,
+        const noAddition=result.added===0 && Boolean(result.start && result.end) && ["unknown","infeasible"].includes(result.status);
+        if(noAddition) proposal=null;
+        const known=!noAddition && !resumeFrom && !result.conflictDate && D.validateSchedule(original,...range(),false).find(i=>i.severity==="error" && i.day && i.nurse_id);
+        generationFailure={resumeFrom,resumeUntil,noAddition,start:result.start,end:result.end,message:result.message,status:result.status,conflictDate:result.conflictDate,conflictCode:result.conflictCode,
           detail:known && !result.conflictDate?"Point à vérifier dans le planning enregistré. "+known.message:""};
         notify();
       }
@@ -3908,14 +4346,18 @@
       case "exit-demo": switchSpace(false); break;
       case "accept":
         if(proposal) {
-          const scope=proposal.resumeFrom?"Complément du "+shortDay(proposal.resumeFrom)+" au "+shortDay(proposal.resumeUntil)+" enregistré.":
+          const scope=proposal.status==="partial"?"Brouillon enregistré. Vérifiez les postes à pourvoir et les conflits dans le planning.":
+            proposal.resumeFrom?"Complément du "+shortDay(proposal.resumeFrom)+" au "+shortDay(proposal.resumeUntil)+" enregistré.":
             proposal.end>range()[1]?"Planning et anticipation enregistrés.":"Planning du mois enregistré.";
           save(clone(proposal.candidate),scope); includeLookahead=false; render();
         }
         break;
       case "discard": proposal=null; generationFailure=null; notify("Proposition écartée."); render(); break;
       case "cell": showEditor(button.dataset.nurse,button.dataset.day); break;
-      case "edit-day": showDayEditor(button.dataset.day||defaultDay()); break;
+      case "edit-day":
+        showDayEditor(button.dataset.day||defaultDay());
+        if(button.dataset.role) dialog.querySelector('[name="role-'+button.dataset.role+'"]')?.focus();
+        break;
       case "export-pdf": {
         button.disabled=true;
         try {
